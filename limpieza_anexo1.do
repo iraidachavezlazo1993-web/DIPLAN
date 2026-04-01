@@ -297,10 +297,10 @@ tempfile anexo1_temp
 save `anexo1_temp', replace
 
 * Importar Base MINEDU
-capture confirm file "${rep_cons_i}\2026.03.23 Base de Inversiones_.xlsx"
+capture confirm file "${rep_cons_i}\Base_inversiones.xlsx"
 if _rc == 0 {
     preserve
-        import excel "${rep_cons_i}\2026.03.23 Base de Inversiones_.xlsx", ///
+        import excel "${rep_cons_i}\Base_inversiones.xlsx", ///
             sheet("Data") firstrow clear
 
         * Renombrar campos clave
