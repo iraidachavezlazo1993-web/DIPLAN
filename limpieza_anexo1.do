@@ -328,15 +328,24 @@ if _rc == 0 {
         import excel "${rep_cons_i}\Base_inversiones.xlsx", ///
             sheet("Data") firstrow clear
 
-        rename CODIGO_UNICO cui_minedu
-        rename DES_TIPO_FORMATO tipo_minedu_raw
-        rename COSTO_ACTUALIZADO_BI monto_minedu
-        rename TIENE_F9 f9_minedu
-        rename AVANCE_FISICO_F9 avance_f9_minedu
-        rename AVANCE_FISICO_F12B avance_f12b_minedu
-        rename ESTADO estado_minedu
-        rename SITUACION situacion_minedu
-        rename NOMBRE_INVERSION nombre_inv_minedu
+        * Renombrar campos clave (capture por si cambian nombres)
+        capture rename CODIGO_UNICO cui_minedu
+        if _rc != 0 {
+            * Intentar nombres alternativos
+            capture rename CUI cui_minedu
+            capture rename CODIGO_INVERSION cui_minedu
+        }
+        capture rename DES_TIPO_FORMATO tipo_minedu_raw
+        if _rc != 0 capture rename TIPO_FORMATO tipo_minedu_raw
+        if _rc != 0 capture rename TIPO_INVERSION tipo_minedu_raw
+        capture rename COSTO_ACTUALIZADO_BI monto_minedu
+        if _rc != 0 capture rename COSTO_INV_TOTAL_BI monto_minedu
+        capture rename TIENE_F9 f9_minedu
+        capture rename AVANCE_FISICO_F9 avance_f9_minedu
+        capture rename AVANCE_FISICO_F12B avance_f12b_minedu
+        capture rename ESTADO estado_minedu
+        capture rename SITUACION situacion_minedu
+        capture rename NOMBRE_INVERSION nombre_inv_minedu
 
         gen tipo_minedu = ""
         replace tipo_minedu = "IOARR" if regexm(upper(tipo_minedu_raw), "IOARR")

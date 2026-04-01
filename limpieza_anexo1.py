@@ -404,122 +404,152 @@ print("VALIDACIÓN CRUZADA CON BASE DE INVERSIONES MINEDU")
 print("=" * 60)
 
 if INPUT_MINEDU.exists():
-    minedu = pd.read_excel(INPUT_MINEDU, sheet_name="Data", dtype=str)
+    # Leer primera hoja disponible (puede llamarse "Data", "Hoja1", etc.)
+    xls = pd.ExcelFile(INPUT_MINEDU)
+    minedu = pd.read_excel(xls, sheet_name=xls.sheet_names[0], dtype=str)
     print(f"Base MINEDU cargada: {len(minedu):,} registros")
+    print(f"Hoja: '{xls.sheet_names[0]}' | Columnas: {len(minedu.columns)}")
 
-    def tipo_minedu(v):
-        if pd.isna(v):
-            return v
-        s = str(v).strip().upper()
-        if "IOARR" in s:
-            return "IOARR"
-        if "PROYECTO" in s:
-            return "PI"
-        if "IRI" in s:
-            return "IRI"
-        return s
+    # ── Auto-detectar columnas clave por búsqueda flexible ──
+    def find_col(df, candidates):
+        """Busca la primera columna que coincida (case-insensitive) con la lista."""
+        cols_upper = {c.upper(): c for c in df.columns}
+        for cand in candidates:
+            if cand.upper() in cols_upper:
+                return cols_upper[cand.upper()]
+        return None
 
-    minedu["tipo_norm"] = minedu["DES_TIPO_FORMATO"].apply(tipo_minedu)
-    # Asegurar que CUI sea string limpio (sin .0)
-    minedu["cui_norm"] = minedu["CODIGO_UNICO"].apply(
-        lambda v: str(int(float(v))) if pd.notna(v) else v
-    )
+    COL_CUI   = find_col(minedu, ["CODIGO_UNICO", "CUI", "CODIGO_INVERSION", "COD_UNICO"])
+    COL_TIPO  = find_col(minedu, ["DES_TIPO_FORMATO", "TIPO_FORMATO", "TIPO_INVERSION", "TIPO"])
+    COL_MONTO = find_col(minedu, ["COSTO_ACTUALIZADO_BI", "COSTO_INV_TOTAL_BI", "MONTO_ALTE", "COSTO_TOTAL", "MONTO"])
+    COL_F9    = find_col(minedu, ["TIENE_F9", "F9"])
+    COL_AV_F9 = find_col(minedu, ["AVANCE_FISICO_F9", "AVANCE_F9"])
+    COL_AV_F12= find_col(minedu, ["AVANCE_FISICO_F12B", "AVANCE_F12B"])
+    COL_ESTADO= find_col(minedu, ["ESTADO"])
+    COL_SIT   = find_col(minedu, ["SITUACION"])
+    COL_NOMBRE= find_col(minedu, ["NOMBRE_INVERSION", "NOMBRE"])
 
-    minedu_cuis = set(minedu["cui_norm"].dropna())
+    if COL_CUI is None:
+        print("ERROR: No se encontró columna de CUI en Base MINEDU.")
+        print(f"  Columnas disponibles: {list(minedu.columns)[:20]}")
+    else:
+        print(f"  CUI: '{COL_CUI}' | Tipo: '{COL_TIPO}' | Monto: '{COL_MONTO}'")
+        print(f"  F9: '{COL_F9}' | Estado: '{COL_ESTADO}'")
 
-    # Usar base completa para cruce, asegurar CUI como string limpio
-    df_all = df.copy()
-    df_cruce = df_all[df_all["cui"].apply(lambda x: str(x) != ERROR_FLAG and pd.notna(x))].copy()
-    # Limpiar CUI: quitar .0 si viene de float
-    df_cruce["cui"] = df_cruce["cui"].apply(
-        lambda v: str(int(float(v))) if pd.notna(v) and re.match(r"^\d+\.?\d*$", str(v).strip()) else str(v).strip()
-    )
-    anexo_cuis = set(df_cruce["cui"])
+        # Normalizar tipo MINEDU
+        def tipo_minedu(v):
+            if pd.isna(v):
+                return v
+            s = str(v).strip().upper()
+            if "IOARR" in s:
+                return "IOARR"
+            if "PROYECTO" in s:
+                return "PI"
+            if "IRI" in s:
+                return "IRI"
+            return s
 
-    match_cuis = minedu_cuis & anexo_cuis
-    solo_minedu = minedu_cuis - anexo_cuis
-    solo_anexo = anexo_cuis - minedu_cuis
+        if COL_TIPO:
+            minedu["tipo_norm"] = minedu[COL_TIPO].apply(tipo_minedu)
 
-    print(f"\nCUIs en Base MINEDU: {len(minedu_cuis)}")
-    print(f"CUIs en Anexo1 (con CUI válido): {len(anexo_cuis)}")
-    print(f"CUIs que coinciden: {len(match_cuis)}")
-    print(f"CUIs solo en MINEDU (no declarados en Anexo1): {len(solo_minedu)}")
-    print(f"CUIs solo en Anexo1 (no en Base MINEDU): {len(solo_anexo)}")
+        # CUI como string limpio (sin .0)
+        minedu["cui_norm"] = minedu[COL_CUI].apply(
+            lambda v: str(int(float(v))) if pd.notna(v) and re.match(r"^\d+\.?\d*$", str(v).strip()) else str(v).strip() if pd.notna(v) else v
+        )
 
-    rows_cruce = []
+        minedu_cuis = set(minedu["cui_norm"].dropna())
 
-    for cui in sorted(match_cuis):
-        m = minedu[minedu["cui_norm"] == cui].iloc[0]
-        a_rows = df_cruce[df_cruce["cui"] == cui]
-        for _, a in a_rows.iterrows():
-            row = {"cui": cui, "status_cruce": "COINCIDE"}
-            row["tipo_anexo1"] = a.get("tipo", "")
-            row["tipo_minedu"] = m.get("tipo_norm", "")
-            row["tipo_ok"] = "OK" if row["tipo_anexo1"] == row["tipo_minedu"] else "DIFERENTE"
-            row["monto_anexo1"] = a.get("monto", "")
-            row["monto_minedu"] = m.get("COSTO_ACTUALIZADO_BI", "")
-            row["f9_anexo1"] = a.get("f9", "")
-            row["f9_minedu"] = m.get("TIENE_F9", "")
-            row["f9_ok"] = "OK" if str(row["f9_anexo1"]).upper() == str(row["f9_minedu"]).upper() else "DIFERENTE"
-            row["avance_anexo1"] = a.get("avance", "")
-            row["avance_minedu_f9"] = m.get("AVANCE_FISICO_F9", "")
-            row["avance_minedu_f12b"] = m.get("AVANCE_FISICO_F12B", "")
-            row["estado_minedu"] = m.get("ESTADO", "")
-            row["situacion_minedu"] = m.get("SITUACION", "")
-            row["nombre_ie"] = a.get("nombre_ie", "")
-            row["nombre_inv_minedu"] = m.get("NOMBRE_INVERSION", "")
-            rows_cruce.append(row)
+        # Base Anexo1 para cruce
+        df_all = df.copy()
+        df_cruce = df_all[df_all["cui"].apply(lambda x: str(x) != ERROR_FLAG and pd.notna(x))].copy()
+        df_cruce["cui"] = df_cruce["cui"].apply(
+            lambda v: str(int(float(v))) if pd.notna(v) and re.match(r"^\d+\.?\d*$", str(v).strip()) else str(v).strip()
+        )
+        anexo_cuis = set(df_cruce["cui"])
 
-    for cui in sorted(solo_minedu):
-        m = minedu[minedu["cui_norm"] == cui].iloc[0]
-        rows_cruce.append({
-            "cui": cui,
-            "status_cruce": "SOLO EN MINEDU (no declarado por GR/GL)",
-            "tipo_minedu": m.get("tipo_norm", ""),
-            "monto_minedu": m.get("COSTO_ACTUALIZADO_BI", ""),
-            "f9_minedu": m.get("TIENE_F9", ""),
-            "estado_minedu": m.get("ESTADO", ""),
-            "situacion_minedu": m.get("SITUACION", ""),
-            "nombre_inv_minedu": m.get("NOMBRE_INVERSION", ""),
-        })
+        match_cuis = minedu_cuis & anexo_cuis
+        solo_minedu = minedu_cuis - anexo_cuis
+        solo_anexo = anexo_cuis - minedu_cuis
 
-    for cui in sorted(solo_anexo):
-        a_rows = df_cruce[df_cruce["cui"] == cui]
-        for _, a in a_rows.iterrows():
-            rows_cruce.append({
-                "cui": cui,
-                "status_cruce": "SOLO EN ANEXO1 (no validado por MINEDU)",
-                "tipo_anexo1": a.get("tipo", ""),
-                "monto_anexo1": a.get("monto", ""),
-                "f9_anexo1": a.get("f9", ""),
-                "avance_anexo1": a.get("avance", ""),
-                "nombre_ie": a.get("nombre_ie", ""),
-            })
+        print(f"\nCUIs en Base MINEDU: {len(minedu_cuis):,}")
+        print(f"CUIs en Anexo1 (con CUI válido): {len(anexo_cuis):,}")
+        print(f"CUIs que coinciden: {len(match_cuis):,}")
+        print(f"CUIs solo en MINEDU: {len(solo_minedu):,}")
+        print(f"CUIs solo en Anexo1: {len(solo_anexo):,}")
 
-    df_cruce_out = pd.DataFrame(rows_cruce)
+        # Helper para obtener valor seguro de una columna
+        def safe_get(row, col):
+            if col and col in row.index:
+                return row[col]
+            return ""
 
-    col_order = ["cui", "status_cruce", "nombre_ie", "nombre_inv_minedu",
-                 "tipo_anexo1", "tipo_minedu", "tipo_ok",
-                 "monto_anexo1", "monto_minedu",
-                 "f9_anexo1", "f9_minedu", "f9_ok",
-                 "avance_anexo1", "avance_minedu_f9", "avance_minedu_f12b",
-                 "estado_minedu", "situacion_minedu"]
-    col_order = [c for c in col_order if c in df_cruce_out.columns]
-    df_cruce_out = df_cruce_out[col_order]
+        rows_cruce = []
 
-    with pd.ExcelWriter(OUT_CRUCE, engine="openpyxl") as w:
-        df_cruce_out.to_excel(w, index=False, sheet_name="Validacion Cruce")
+        # 1) CUIs que coinciden
+        for cui in sorted(match_cuis):
+            m = minedu[minedu["cui_norm"] == cui].iloc[0]
+            a_rows = df_cruce[df_cruce["cui"] == cui]
+            for _, a in a_rows.iterrows():
+                row = {"cui": cui, "status_cruce": "COINCIDE"}
+                row["tipo_anexo1"] = a.get("tipo", "")
+                row["tipo_minedu"] = safe_get(m, "tipo_norm") if COL_TIPO else ""
+                row["tipo_ok"] = "OK" if row["tipo_anexo1"] == row["tipo_minedu"] else "DIFERENTE"
+                row["monto_anexo1"] = a.get("monto", "")
+                row["monto_minedu"] = safe_get(m, COL_MONTO)
+                row["f9_anexo1"] = a.get("f9", "")
+                row["f9_minedu"] = safe_get(m, COL_F9)
+                row["f9_ok"] = "OK" if str(row["f9_anexo1"]).upper() == str(row["f9_minedu"]).upper() else "DIFERENTE"
+                row["avance_anexo1"] = a.get("avance", "")
+                row["avance_minedu_f9"] = safe_get(m, COL_AV_F9)
+                row["avance_minedu_f12b"] = safe_get(m, COL_AV_F12)
+                row["estado_minedu"] = safe_get(m, COL_ESTADO)
+                row["situacion_minedu"] = safe_get(m, COL_SIT)
+                row["nombre_ie"] = a.get("nombre_ie", "")
+                row["nombre_inv_minedu"] = safe_get(m, COL_NOMBRE)
+                rows_cruce.append(row)
 
-    print(f"\nReporte de cruce generado: {OUT_CRUCE}")
+        # 2) CUIs solo en MINEDU (no exportar los 149k, solo resumen)
+        n_solo_minedu = len(solo_minedu)
 
-    if len(match_cuis) > 0:
-        coinciden = df_cruce_out[df_cruce_out["status_cruce"] == "COINCIDE"]
-        if "tipo_ok" in coinciden.columns:
-            tipo_diff = (coinciden["tipo_ok"] == "DIFERENTE").sum()
-            print(f"  Tipo discrepante: {tipo_diff}")
-        if "f9_ok" in coinciden.columns:
-            f9_diff = (coinciden["f9_ok"] == "DIFERENTE").sum()
-            print(f"  F9 discrepante: {f9_diff}")
+        # 3) CUIs solo en Anexo1
+        for cui in sorted(solo_anexo):
+            a_rows = df_cruce[df_cruce["cui"] == cui]
+            for _, a in a_rows.iterrows():
+                rows_cruce.append({
+                    "cui": cui,
+                    "status_cruce": "SOLO EN ANEXO1 (no en Base MINEDU)",
+                    "tipo_anexo1": a.get("tipo", ""),
+                    "monto_anexo1": a.get("monto", ""),
+                    "f9_anexo1": a.get("f9", ""),
+                    "avance_anexo1": a.get("avance", ""),
+                    "nombre_ie": a.get("nombre_ie", ""),
+                })
+
+        df_cruce_out = pd.DataFrame(rows_cruce)
+
+        col_order = ["cui", "status_cruce", "nombre_ie", "nombre_inv_minedu",
+                     "tipo_anexo1", "tipo_minedu", "tipo_ok",
+                     "monto_anexo1", "monto_minedu",
+                     "f9_anexo1", "f9_minedu", "f9_ok",
+                     "avance_anexo1", "avance_minedu_f9", "avance_minedu_f12b",
+                     "estado_minedu", "situacion_minedu"]
+        col_order = [c for c in col_order if c in df_cruce_out.columns]
+        df_cruce_out = df_cruce_out[col_order]
+
+        with pd.ExcelWriter(OUT_CRUCE, engine="openpyxl") as w:
+            df_cruce_out.to_excel(w, index=False, sheet_name="Validacion Cruce")
+
+        print(f"\nReporte de cruce generado: {OUT_CRUCE}")
+        print(f"  (CUIs solo en MINEDU: {n_solo_minedu:,} — no exportados al Excel)")
+
+        if len(match_cuis) > 0:
+            coinciden = df_cruce_out[df_cruce_out["status_cruce"] == "COINCIDE"]
+            if "tipo_ok" in coinciden.columns:
+                tipo_diff = (coinciden["tipo_ok"] == "DIFERENTE").sum()
+                print(f"  Tipo discrepante: {tipo_diff}")
+            if "f9_ok" in coinciden.columns:
+                f9_diff = (coinciden["f9_ok"] == "DIFERENTE").sum()
+                print(f"  F9 discrepante: {f9_diff}")
 else:
     print(f"AVISO: No se encontró {INPUT_MINEDU}")
     print("  Se omite la validación cruzada.")
