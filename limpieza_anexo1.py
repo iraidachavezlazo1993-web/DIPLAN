@@ -37,7 +37,14 @@ rep_cons_o   = reporte / "03_output"
 rep_cons_t   = reporte / "04_temporal"
 
 INPUT        = rep_cons_i / "Anexo_1_avance_GR_GL.xlsx"
-INPUT_MINEDU = rep_cons_i / "Base_inversiones.xlsx"
+INPUT_MINEDU = None
+for fname in ["Base_inversiones.xlsx", "2026.03.23_Base de Inversiones.xlsx", "2026.03.23 Base de Inversiones_.xlsx"]:
+    candidate = rep_cons_i / fname
+    if candidate.exists():
+        INPUT_MINEDU = candidate
+        break
+if INPUT_MINEDU is None:
+    INPUT_MINEDU = rep_cons_i / "Base_inversiones.xlsx"  # fallback para mensaje de error
 OUT_CLEAN    = rep_cons_o / "Anexo1_base_limpia.xlsx"
 OUT_ERRORS   = rep_cons_o / "Anexo1_base_errores.xlsx"
 OUT_CRUCE    = rep_cons_o / "Anexo1_validacion_cruce.xlsx"

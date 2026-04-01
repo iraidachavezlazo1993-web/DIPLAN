@@ -322,66 +322,147 @@ di "============================================================"
 tempfile anexo1_temp
 save `anexo1_temp', replace
 
-capture confirm file "${rep_cons_i}\Base_inversiones.xlsx"
-if _rc == 0 {
+* Intentar varios nombres posibles del archivo
+local minedu_file ""
+foreach fname in "Base_inversiones.xlsx" "2026.03.23_Base de Inversiones.xlsx" "2026.03.23 Base de Inversiones_.xlsx" {
+    capture confirm file "${rep_cons_i}\`fname'"
+    if _rc == 0 {
+        local minedu_file "`fname'"
+        continue, break
+    }
+}
+
+if "`minedu_file'" != "" {
+    di "Archivo encontrado: `minedu_file'"
     preserve
-        import excel "${rep_cons_i}\Base_inversiones.xlsx", ///
+        import excel "${rep_cons_i}\`minedu_file'", ///
             sheet("Data") firstrow clear
 
-        * Renombrar campos clave (capture por si cambian nombres)
-        capture rename CODIGO_UNICO cui_minedu
-        if _rc != 0 {
-            * Intentar nombres alternativos
-            capture rename CUI cui_minedu
-            capture rename CODIGO_INVERSION cui_minedu
+        * Mostrar variables disponibles para diagnóstico
+        di "Variables en Base MINEDU:"
+        describe, simple
+
+        * ── Detectar y renombrar columna CUI ──
+        * Probar varios nombres posibles
+        local cui_found = 0
+        foreach vname in CODIGO_UNICO CUI CODIGO_INVERSION COD_UNICO {
+            capture confirm variable `vname'
+            if _rc == 0 {
+                rename `vname' cui_minedu
+                local cui_found = 1
+                di "  CUI detectado: `vname'"
+                continue, break
+            }
         }
-        capture rename DES_TIPO_FORMATO tipo_minedu_raw
-        if _rc != 0 capture rename TIPO_FORMATO tipo_minedu_raw
-        if _rc != 0 capture rename TIPO_INVERSION tipo_minedu_raw
-        capture rename COSTO_ACTUALIZADO_BI monto_minedu
-        if _rc != 0 capture rename COSTO_INV_TOTAL_BI monto_minedu
-        capture rename TIENE_F9 f9_minedu
-        capture rename AVANCE_FISICO_F9 avance_f9_minedu
-        capture rename AVANCE_FISICO_F12B avance_f12b_minedu
-        capture rename ESTADO estado_minedu
-        capture rename SITUACION situacion_minedu
-        capture rename NOMBRE_INVERSION nombre_inv_minedu
 
-        gen tipo_minedu = ""
-        replace tipo_minedu = "IOARR" if regexm(upper(tipo_minedu_raw), "IOARR")
-        replace tipo_minedu = "PI"    if regexm(upper(tipo_minedu_raw), "PROYECTO") & tipo_minedu == ""
-        replace tipo_minedu = "IRI"   if regexm(upper(tipo_minedu_raw), "IRI") & tipo_minedu == ""
+        if `cui_found' == 0 {
+            di "ERROR: No se encontró columna de CUI en Base MINEDU"
+            restore
+            use `anexo1_temp', clear
+            // salir del bloque
+        }
+        else {
 
-        * Asegurar CUI como string (por si viene numérico)
+        * ── Detectar y renombrar otras columnas (si existen) ──
+        local tipo_found = 0
+        foreach vname in DES_TIPO_FORMATO TIPO_FORMATO TIPO_INVERSION TIPO {
+            capture confirm variable `vname'
+            if _rc == 0 {
+                rename `vname' tipo_minedu_raw
+                local tipo_found = 1
+                continue, break
+            }
+        }
+
+        foreach vname in COSTO_ACTUALIZADO_BI COSTO_INV_TOTAL_BI MONTO_ALTE COSTO_TOTAL {
+            capture confirm variable `vname'
+            if _rc == 0 {
+                rename `vname' monto_minedu
+                continue, break
+            }
+        }
+
+        foreach vname in TIENE_F9 F9 {
+            capture confirm variable `vname'
+            if _rc == 0 {
+                rename `vname' f9_minedu
+                continue, break
+            }
+        }
+
+        foreach vname in AVANCE_FISICO_F9 AVANCE_F9 {
+            capture confirm variable `vname'
+            if _rc == 0 {
+                rename `vname' avance_f9_minedu
+                continue, break
+            }
+        }
+
+        foreach vname in AVANCE_FISICO_F12B AVANCE_F12B {
+            capture confirm variable `vname'
+            if _rc == 0 {
+                rename `vname' avance_f12b_minedu
+                continue, break
+            }
+        }
+
+        capture confirm variable ESTADO
+        if _rc == 0 rename ESTADO estado_minedu
+
+        capture confirm variable SITUACION
+        if _rc == 0 rename SITUACION situacion_minedu
+
+        foreach vname in NOMBRE_INVERSION NOMBRE {
+            capture confirm variable `vname'
+            if _rc == 0 {
+                rename `vname' nombre_inv_minedu
+                continue, break
+            }
+        }
+
+        * ── Normalizar tipo MINEDU ──
+        if `tipo_found' == 1 {
+            gen tipo_minedu = ""
+            replace tipo_minedu = "IOARR" if regexm(upper(tipo_minedu_raw), "IOARR")
+            replace tipo_minedu = "PI"    if regexm(upper(tipo_minedu_raw), "PROYECTO") & tipo_minedu == ""
+            replace tipo_minedu = "IRI"   if regexm(upper(tipo_minedu_raw), "IRI") & tipo_minedu == ""
+        }
+
+        * ── Asegurar CUI como string ──
         capture tostring cui_minedu, replace force
         replace cui_minedu = strtrim(cui_minedu)
-        * Quitar .0 si vino de float
         replace cui_minedu = regexr(cui_minedu, "\.0+$", "")
 
-        keep cui_minedu tipo_minedu monto_minedu f9_minedu ///
-             avance_f9_minedu avance_f12b_minedu estado_minedu ///
-             situacion_minedu nombre_inv_minedu
+        * Quedarse solo con las variables que existen
+        local keepvars "cui_minedu"
+        foreach v in tipo_minedu monto_minedu f9_minedu avance_f9_minedu avance_f12b_minedu estado_minedu situacion_minedu nombre_inv_minedu {
+            capture confirm variable `v'
+            if _rc == 0 local keepvars "`keepvars' `v'"
+        }
+        keep `keepvars'
 
         tempfile minedu_temp
         save `minedu_temp', replace
 
         count
         di "Base MINEDU cargada: `r(N)' registros"
+
+        } // end else (cui_found)
     restore
 
+    * ── Merge ──
     use `anexo1_temp', clear
     keep if err_cui == 0 & !missing(cui)
 
-    * Asegurar CUI como string limpio
     capture tostring cui, replace force
     replace cui = strtrim(cui)
     replace cui = regexr(cui, "\.0+$", "")
 
     rename cui cui_minedu
     rename tipo tipo_anexo1
-    rename monto monto_anexo1
+    capture rename monto monto_anexo1
     rename f9 f9_anexo1
-    rename avance avance_anexo1
+    capture rename avance avance_anexo1
 
     merge m:1 cui_minedu using `minedu_temp'
 
@@ -390,13 +471,20 @@ if _rc == 0 {
     replace status_cruce = "SOLO EN ANEXO1 (no validado por MINEDU)" if _merge == 1
     replace status_cruce = "SOLO EN MINEDU (no declarado por GR/GL)" if _merge == 2
 
-    gen tipo_ok = ""
-    replace tipo_ok = "OK" if tipo_anexo1 == tipo_minedu & _merge == 3
-    replace tipo_ok = "DIFERENTE" if tipo_anexo1 != tipo_minedu & _merge == 3
+    * Comparar campos para los que coinciden
+    capture confirm variable tipo_minedu
+    if _rc == 0 {
+        gen tipo_ok = ""
+        replace tipo_ok = "OK" if tipo_anexo1 == tipo_minedu & _merge == 3
+        replace tipo_ok = "DIFERENTE" if tipo_anexo1 != tipo_minedu & _merge == 3
+    }
 
-    gen f9_ok = ""
-    replace f9_ok = "OK" if upper(f9_anexo1) == upper(f9_minedu) & _merge == 3
-    replace f9_ok = "DIFERENTE" if upper(f9_anexo1) != upper(f9_minedu) & _merge == 3
+    capture confirm variable f9_minedu
+    if _rc == 0 {
+        gen f9_ok = ""
+        replace f9_ok = "OK" if upper(f9_anexo1) == upper(f9_minedu) & _merge == 3
+        replace f9_ok = "DIFERENTE" if upper(f9_anexo1) != upper(f9_minedu) & _merge == 3
+    }
 
     di ""
     qui count if _merge == 3
@@ -406,18 +494,29 @@ if _rc == 0 {
     qui count if _merge == 2
     di "CUIs solo en MINEDU: `r(N)'"
 
-    qui count if tipo_ok == "DIFERENTE"
-    di "Tipo discrepante: `r(N)'"
-    qui count if f9_ok == "DIFERENTE"
-    di "F9 discrepante: `r(N)'"
+    capture confirm variable tipo_ok
+    if _rc == 0 {
+        qui count if tipo_ok == "DIFERENTE"
+        di "Tipo discrepante: `r(N)'"
+    }
+    capture confirm variable f9_ok
+    if _rc == 0 {
+        qui count if f9_ok == "DIFERENTE"
+        di "F9 discrepante: `r(N)'"
+    }
 
+    * Exportar solo COINCIDE y SOLO EN ANEXO1 (no los ~149k solo-MINEDU)
+    drop if _merge == 2
+    drop _merge
+
+    * Exportar solo las variables que existen
     rename cui_minedu cui
-    keep cui status_cruce nombre_ie nombre_inv_minedu ///
-         tipo_anexo1 tipo_minedu tipo_ok ///
-         monto_anexo1 monto_minedu ///
-         f9_anexo1 f9_minedu f9_ok ///
-         avance_anexo1 avance_f9_minedu avance_f12b_minedu ///
-         estado_minedu situacion_minedu
+    local exportvars "cui status_cruce"
+    foreach v in nombre_ie nombre_inv_minedu tipo_anexo1 tipo_minedu tipo_ok monto_anexo1 monto_minedu f9_anexo1 f9_minedu f9_ok avance_anexo1 avance_f9_minedu avance_f12b_minedu estado_minedu situacion_minedu {
+        capture confirm variable `v'
+        if _rc == 0 local exportvars "`exportvars' `v'"
+    }
+    keep `exportvars'
 
     export excel using "${rep_cons_o}\Anexo1_validacion_cruce_stata.xlsx", ///
         firstrow(variables) sheet("Validacion Cruce") replace
@@ -427,6 +526,7 @@ if _rc == 0 {
 }
 else {
     di "AVISO: No se encontró la Base de Inversiones MINEDU en ${rep_cons_i}"
+    di "  Archivos buscados: Base_inversiones.xlsx, 2026.03.23_Base de Inversiones.xlsx"
     di "  Se omite la validación cruzada."
 }
 
