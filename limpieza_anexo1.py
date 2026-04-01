@@ -69,7 +69,7 @@ DICCIONARIO = pd.DataFrame([
     ("agua",         "¿Acceso al servicio de agua y desagüe? (SÍ / NO)"),
     ("elec",         "¿Acceso al servicio de energía eléctrica? (SÍ / NO)"),
     ("comentarios",  "Comentarios adicionales"),
-    ("cod_local_dup","Observación: SI si el código de local está duplicado"),
+    ("cod_local_dup","Observación: SI si la combinación cod_local+CUI está duplicada (registro repetido)"),
 ], columns=["Campo", "Descripción"])
 
 DICCIONARIO_ERRORES = pd.DataFrame([
@@ -341,12 +341,14 @@ df["cod_mod"] = df["cod_mod"].apply(
     lambda v: norm_cod_mod(v) if pd.notna(v) and str(v).strip() != "" else v
 )
 
-# ── 6c. MARCAR cod_local DUPLICADO ──────────────────────────────────────────
-dup_mask = df["cod_local"].duplicated(keep=False) & df["cod_local"].notna()
+# ── 6c. MARCAR cod_local + CUI DUPLICADO ────────────────────────────────────
+# Un mismo cod_local puede tener varios CUI (varias inversiones), eso es válido.
+# Solo se marca como duplicado si se repite la combinación cod_local + cui.
+dup_mask = df.duplicated(subset=["cod_local", "cui"], keep=False) & df["cod_local"].notna()
 df["cod_local_dup"] = ""
 df.loc[dup_mask, "cod_local_dup"] = "SI"
 n_dup = dup_mask.sum()
-print(f"cod_local duplicados: {n_dup} filas ({df.loc[dup_mask, 'cod_local'].nunique()} locales)")
+print(f"cod_local+cui duplicados: {n_dup} filas")
 
 # ── 6d. RENUMERAR nro ───────────────────────────────────────────────────────
 df["nro"] = range(1, len(df) + 1)

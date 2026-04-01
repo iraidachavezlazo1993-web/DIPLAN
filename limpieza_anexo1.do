@@ -252,15 +252,17 @@ label var cod_mod "Códigos modulares intervenidos - solo dígitos separados por
 
 
 // ***************************************************************
-// 9c. MARCAR cod_local DUPLICADO
+// 9c. MARCAR cod_local + CUI DUPLICADO
 // ***************************************************************
+* Un mismo cod_local puede tener varios CUI (varias inversiones), eso es válido.
+* Solo se marca si se repite la combinación cod_local + cui (registro repetido).
 gen cod_local_dup = ""
-bysort cod_local: gen _n_local = _N
-replace cod_local_dup = "SI" if _n_local > 1 & !missing(cod_local)
+bysort cod_local cui: gen _n_local_cui = _N
+replace cod_local_dup = "SI" if _n_local_cui > 1 & !missing(cod_local)
 qui count if cod_local_dup == "SI"
-di "cod_local duplicados: `r(N)' filas"
-drop _n_local
-label var cod_local_dup "Observación: SI si código de local está duplicado"
+di "cod_local+cui duplicados: `r(N)' filas"
+drop _n_local_cui
+label var cod_local_dup "Observación: SI si combinación cod_local+CUI está duplicada"
 
 
 // ***************************************************************
