@@ -127,9 +127,13 @@ replace err_tipo = 1 if !inlist(tipo, "PI", "IOARR", "IRI", "") & !missing(tipo)
 replace monto = subinstr(monto, ",", ".", .)
 replace monto = strtrim(monto)
 
+* Guardar original string para detectar conversiones fallidas vs vacíos
+gen monto_orig = monto
 destring monto, replace force
-replace err_monto = 1 if missing(monto) & monto != ""
+* Error solo si había texto pero destring no pudo convertir (no si estaba vacío)
+replace err_monto = 1 if missing(monto) & monto_orig != "" & !missing(monto_orig)
 replace err_monto = 1 if monto < 0 & !missing(monto)
+drop monto_orig
 
 
 // ***************************************************************
@@ -139,13 +143,17 @@ replace avance = subinstr(avance, "%", "", .)
 replace avance = subinstr(avance, ",", ".", .)
 replace avance = strtrim(avance)
 
+* Guardar original string para detectar conversiones fallidas vs vacíos
+gen avance_orig = avance
 destring avance, replace force
 
 * Si vino como proporción (0–1) → convertir a porcentaje
 replace avance = round(avance * 100, 0.01) if !missing(avance) & avance > 0 & avance <= 1
 
-replace err_avance = 1 if missing(avance) & avance != ""
+* Error solo si había texto pero destring no pudo convertir (no si estaba vacío)
+replace err_avance = 1 if missing(avance) & avance_orig != "" & !missing(avance_orig)
 replace err_avance = 1 if (avance < 0 | avance > 100) & !missing(avance)
+drop avance_orig
 
 
 // ***************************************************************
