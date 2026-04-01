@@ -1,22 +1,24 @@
 """
 LIMPIEZA - Anexo 01: Relación de locales educativos intervenidos
 ================================================================
-Limpia los campos ingresados por GR/GL en el Anexo 1.
+Limpia los campos ingresados por GR/GL en el Anexo 1 y valida contra
+la Base de Inversiones MINEDU.
 
 Campos limpiados:
-  - CUI (solo numérico)
-  - Tipo de inversión (PI/IOARR/IRI)
+  - CUI (solo numérico, validado contra Base MINEDU)
+  - Tipo de inversión (PI/IOARR/IRI, cruzado con MINEDU)
   - Monto de inversión (numérico positivo)
   - Avance físico (0-100%)
   - Fecha de recepción de obra
-  - Tiene F9 (SI/NO)
+  - Tiene F9 (SI/NO, cruzado con MINEDU)
   - Componentes (1. Infraestructura / 2. Equipamiento / 3. Mobiliario / 4. Integral)
   - Campos SI/NO de intervención (unid, demol, nueva, reforz, cerco, sust, ampl, mobil, agua, elec)
   - Comentarios
 
-Genera dos archivos:
-  - Anexo1_base_limpia.xlsx   (registros sin errores)
-  - Anexo1_base_errores.xlsx  (registros con al menos un error)
+Genera archivos:
+  - Anexo1_base_limpia.xlsx     (registros sin errores)
+  - Anexo1_base_errores.xlsx    (registros con al menos un error)
+  - Anexo1_validacion_cruce.xlsx (reporte de cruce con Base MINEDU)
 """
 
 import pandas as pd
@@ -26,8 +28,10 @@ from pathlib import Path
 # ── 0. RUTAS ─────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).resolve().parent
 INPUT      = BASE_DIR / "Anexo_1_avance_GR_GL.xlsx"
-OUT_CLEAN  = BASE_DIR / "Anexo1_base_limpia.xlsx"
-OUT_ERRORS = BASE_DIR / "Anexo1_base_errores.xlsx"
+INPUT_MINEDU = BASE_DIR / "2026.03.23 Base de Inversiones_.xlsx"
+OUT_CLEAN    = BASE_DIR / "Anexo1_base_limpia.xlsx"
+OUT_ERRORS   = BASE_DIR / "Anexo1_base_errores.xlsx"
+OUT_CRUCE    = BASE_DIR / "Anexo1_validacion_cruce.xlsx"
 
 # ── 1. IMPORTAR ──────────────────────────────────────────────────────────────
 # header=0 → fila 1 del Excel como nombres de columna (igual que Stata firstrow)
@@ -340,6 +344,147 @@ with pd.ExcelWriter(OUT_CLEAN, engine="openpyxl") as w:
 with pd.ExcelWriter(OUT_ERRORS, engine="openpyxl") as w:
     df_errors.to_excel(w, index=False, sheet_name="Registros con Errores")
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 10. VALIDACIÓN CRUZADA CON BASE DE INVERSIONES MINEDU
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n" + "=" * 60)
+print("VALIDACIÓN CRUZADA CON BASE DE INVERSIONES MINEDU")
+print("=" * 60)
+
+if INPUT_MINEDU.exists():
+    minedu = pd.read_excel(INPUT_MINEDU, sheet_name="Data", dtype=str)
+    print(f"Base MINEDU cargada: {len(minedu):,} registros")
+
+    # Normalizar tipo MINEDU para comparación
+    def tipo_minedu(v):
+        if pd.isna(v):
+            return v
+        s = str(v).strip().upper()
+        if "IOARR" in s:
+            return "IOARR"
+        if "PROYECTO" in s:
+            return "PI"
+        if "IRI" in s:
+            return "IRI"
+        return s
+
+    minedu["tipo_norm"] = minedu["DES_TIPO_FORMATO"].apply(tipo_minedu)
+    minedu["cui_norm"] = minedu["CODIGO_UNICO"].str.strip()
+
+    # Conjunto de CUIs válidos MINEDU
+    minedu_cuis = set(minedu["cui_norm"].dropna())
+
+    # Usar la base completa (limpia + errores) para el cruce
+    df_all = df.copy()
+    # Solo filas con CUI numérico válido (no ERROR_FLAG)
+    df_cruce = df_all[df_all["cui"].apply(lambda x: str(x) != ERROR_FLAG and pd.notna(x))].copy()
+    anexo_cuis = set(df_cruce["cui"].str.strip())
+
+    match_cuis = minedu_cuis & anexo_cuis
+    solo_minedu = minedu_cuis - anexo_cuis
+    solo_anexo = anexo_cuis - minedu_cuis
+
+    print(f"\nCUIs en Base MINEDU: {len(minedu_cuis)}")
+    print(f"CUIs en Anexo1 (con CUI válido): {len(anexo_cuis)}")
+    print(f"CUIs que coinciden: {len(match_cuis)}")
+    print(f"CUIs solo en MINEDU (no declarados en Anexo1): {len(solo_minedu)}")
+    print(f"CUIs solo en Anexo1 (no en Base MINEDU): {len(solo_anexo)}")
+
+    # ── Construir reporte de cruce ──
+    rows_cruce = []
+
+    # 1) CUIs que coinciden: comparar tipo, monto, f9, avance
+    for cui in sorted(match_cuis):
+        m = minedu[minedu["cui_norm"] == cui].iloc[0]
+        a_rows = df_cruce[df_cruce["cui"].str.strip() == cui]
+        for _, a in a_rows.iterrows():
+            row = {"cui": cui, "status_cruce": "COINCIDE"}
+            # Tipo
+            row["tipo_anexo1"] = a.get("tipo", "")
+            row["tipo_minedu"] = m.get("tipo_norm", "")
+            row["tipo_ok"] = "OK" if row["tipo_anexo1"] == row["tipo_minedu"] else "DIFERENTE"
+            # Monto
+            row["monto_anexo1"] = a.get("monto", "")
+            row["monto_minedu"] = m.get("COSTO_ACTUALIZADO_BI", "")
+            # F9
+            row["f9_anexo1"] = a.get("f9", "")
+            row["f9_minedu"] = m.get("TIENE_F9", "")
+            row["f9_ok"] = "OK" if str(row["f9_anexo1"]).upper() == str(row["f9_minedu"]).upper() else "DIFERENTE"
+            # Avance
+            row["avance_anexo1"] = a.get("avance", "")
+            row["avance_minedu_f9"] = m.get("AVANCE_FISICO_F9", "")
+            row["avance_minedu_f12b"] = m.get("AVANCE_FISICO_F12B", "")
+            # Estado MINEDU
+            row["estado_minedu"] = m.get("ESTADO", "")
+            row["situacion_minedu"] = m.get("SITUACION", "")
+            row["nombre_ie"] = a.get("nombre_ie", "")
+            row["nombre_inv_minedu"] = m.get("NOMBRE_INVERSION", "")
+            rows_cruce.append(row)
+
+    # 2) CUIs solo en MINEDU
+    for cui in sorted(solo_minedu):
+        m = minedu[minedu["cui_norm"] == cui].iloc[0]
+        rows_cruce.append({
+            "cui": cui,
+            "status_cruce": "SOLO EN MINEDU (no declarado por GR/GL)",
+            "tipo_minedu": m.get("tipo_norm", ""),
+            "monto_minedu": m.get("COSTO_ACTUALIZADO_BI", ""),
+            "f9_minedu": m.get("TIENE_F9", ""),
+            "estado_minedu": m.get("ESTADO", ""),
+            "situacion_minedu": m.get("SITUACION", ""),
+            "nombre_inv_minedu": m.get("NOMBRE_INVERSION", ""),
+        })
+
+    # 3) CUIs solo en Anexo1 (muestra: no están validados por MINEDU)
+    for cui in sorted(solo_anexo):
+        a_rows = df_cruce[df_cruce["cui"].str.strip() == cui]
+        for _, a in a_rows.iterrows():
+            rows_cruce.append({
+                "cui": cui,
+                "status_cruce": "SOLO EN ANEXO1 (no validado por MINEDU)",
+                "tipo_anexo1": a.get("tipo", ""),
+                "monto_anexo1": a.get("monto", ""),
+                "f9_anexo1": a.get("f9", ""),
+                "avance_anexo1": a.get("avance", ""),
+                "nombre_ie": a.get("nombre_ie", ""),
+            })
+
+    df_cruce_out = pd.DataFrame(rows_cruce)
+
+    # Ordenar columnas
+    col_order = ["cui", "status_cruce", "nombre_ie", "nombre_inv_minedu",
+                 "tipo_anexo1", "tipo_minedu", "tipo_ok",
+                 "monto_anexo1", "monto_minedu",
+                 "f9_anexo1", "f9_minedu", "f9_ok",
+                 "avance_anexo1", "avance_minedu_f9", "avance_minedu_f12b",
+                 "estado_minedu", "situacion_minedu"]
+    col_order = [c for c in col_order if c in df_cruce_out.columns]
+    df_cruce_out = df_cruce_out[col_order]
+
+    # Exportar
+    with pd.ExcelWriter(OUT_CRUCE, engine="openpyxl") as w:
+        df_cruce_out.to_excel(w, index=False, sheet_name="Validacion Cruce")
+
+    print(f"\nReporte de cruce generado: {OUT_CRUCE}")
+
+    # Resumen de discrepancias
+    if len(match_cuis) > 0:
+        coinciden = df_cruce_out[df_cruce_out["status_cruce"] == "COINCIDE"]
+        if "tipo_ok" in coinciden.columns:
+            tipo_diff = (coinciden["tipo_ok"] == "DIFERENTE").sum()
+            print(f"  Tipo discrepante: {tipo_diff}")
+        if "f9_ok" in coinciden.columns:
+            f9_diff = (coinciden["f9_ok"] == "DIFERENTE").sum()
+            print(f"  F9 discrepante: {f9_diff}")
+else:
+    print(f"AVISO: No se encontró {INPUT_MINEDU}")
+    print("  Se omite la validación cruzada.")
+
+
+# ── RESUMEN FINAL ────────────────────────────────────────────────────────────
 print(f"\nArchivos generados:")
 print(f"  {OUT_CLEAN}")
 print(f"  {OUT_ERRORS}")
+if INPUT_MINEDU.exists():
+    print(f"  {OUT_CRUCE}")
