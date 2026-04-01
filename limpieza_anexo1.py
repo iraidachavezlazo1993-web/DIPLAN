@@ -13,11 +13,16 @@ Campos limpiados:
   - Tiene F9 (SI/NO, cruzado con MINEDU)
   - Componentes (1. Infraestructura / 2. Equipamiento / 3. Mobiliario / 4. Integral)
   - Campos SI/NO de intervención (unid, demol, nueva, reforz, cerco, sust, ampl, mobil, agua, elec)
+  - cod_mod (códigos modulares: solo dígitos, separados por coma)
   - Comentarios
 
+Validaciones adicionales:
+  - cod_local duplicado → observación
+  - nro renumerado secuencialmente
+
 Genera archivos:
-  - Anexo1_base_limpia.xlsx     (registros sin errores)
-  - Anexo1_base_errores.xlsx    (registros con al menos un error)
+  - Anexo1_base_limpia.xlsx     (registros sin errores + Diccionario de Datos)
+  - Anexo1_base_errores.xlsx    (registros con al menos un error + Diccionario de Datos)
   - Anexo1_validacion_cruce.xlsx (reporte de cruce con Base MINEDU)
 """
 
@@ -37,9 +42,43 @@ OUT_CLEAN    = rep_cons_o / "Anexo1_base_limpia.xlsx"
 OUT_ERRORS   = rep_cons_o / "Anexo1_base_errores.xlsx"
 OUT_CRUCE    = rep_cons_o / "Anexo1_validacion_cruce.xlsx"
 
+# ── DICCIONARIO DE DATOS ─────────────────────────────────────────────────────
+DICCIONARIO = pd.DataFrame([
+    ("nro",          "Número correlativo (renumerado automáticamente)"),
+    ("cod_local",    "Código de local educativo"),
+    ("region",       "Región / Departamento"),
+    ("provincia",    "Provincia"),
+    ("distrito",     "Distrito"),
+    ("nombre_ie",    "Nombre de la Institución Educativa"),
+    ("cui",          "Código Único de Inversión (CUI) - solo numérico"),
+    ("tipo",         "Tipo de inversión: PI (Proyecto de Inversión) / IOARR / IRI"),
+    ("monto",        "Monto de inversión en soles (S/)"),
+    ("avance",       "Avance físico en porcentaje (0-100)"),
+    ("fecha",        "Fecha de recepción de obra (o estimada)"),
+    ("f9",           "¿Tiene Formato 9? (SI / NO)"),
+    ("comp",         "Componentes: 1. Infraestructura / 2. Equipamiento / 3. Mobiliario / 4. Integral (1, 2 y 3)"),
+    ("unid",         "¿La inversión intervino en todas las unidades productoras del local educativo? (SÍ / NO)"),
+    ("cod_mod",      "Códigos modulares intervenidos (si unid=NO). Solo dígitos separados por coma"),
+    ("demol",        "¿Demolición total o parcial de infraestructura existente? (SÍ / NO)"),
+    ("nueva",        "¿Construcción de nueva infraestructura? (SÍ / NO)"),
+    ("reforz",       "¿Reforzamiento estructural de edificaciones? (SÍ / NO)"),
+    ("cerco",        "¿Construcción y/o reposición del cerco perimétrico? (SÍ / NO)"),
+    ("sust",         "¿Sustitución parcial de edificaciones? (SÍ / NO)"),
+    ("ampl",         "¿Ampliación del área de infraestructura existente? (SÍ / NO)"),
+    ("mobil",        "¿Reposición y/o dotación de mobiliario y equipamiento? (SÍ / NO)"),
+    ("agua",         "¿Acceso al servicio de agua y desagüe? (SÍ / NO)"),
+    ("elec",         "¿Acceso al servicio de energía eléctrica? (SÍ / NO)"),
+    ("comentarios",  "Comentarios adicionales"),
+    ("cod_local_dup","Observación: SI si el código de local está duplicado"),
+], columns=["Campo", "Descripción"])
+
+DICCIONARIO_ERRORES = pd.DataFrame([
+    ("err_*",        "Columna de error por campo: 1 = error en ese campo, 0 = ok"),
+    ("tiene_error",  "1 si al menos un campo tiene error"),
+    ("<<ERROR>>",    "Valor que no pudo normalizarse. Revisar y corregir manualmente"),
+], columns=["Campo", "Descripción"])
+
 # ── 1. IMPORTAR ──────────────────────────────────────────────────────────────
-# header=0 → fila 1 del Excel como nombres de columna (igual que Stata firstrow)
-# dtype=str → todo como texto para preservar los valores tal cual
 df = pd.read_excel(INPUT, sheet_name="Hoja1", header=0, dtype=str)
 print(f"Importado: {df.shape[0]:,} obs, {df.shape[1]} vars")
 
@@ -76,7 +115,6 @@ rename_map = {
     df.columns[24]: "comentarios",
 }
 df = df.rename(columns=rename_map)
-# Eliminar columnas extra (cols 25+)
 extra_cols = [c for c in df.columns if c not in rename_map.values()]
 df = df.drop(columns=extra_cols)
 
@@ -86,7 +124,8 @@ print(f"Filas con CUI: {len(df):,}")
 
 # Columnas de error por campo (0=ok, 1=error)
 CHECK_VARS = ["cui", "tipo", "monto", "avance", "f9", "comp",
-              "unid", "demol", "nueva", "reforz", "cerco", "sust",
+              "unid", "cod_mod",
+              "demol", "nueva", "reforz", "cerco", "sust",
               "ampl", "mobil", "agua", "elec"]
 for field in CHECK_VARS:
     df[f"err_{field}"] = 0
@@ -103,7 +142,6 @@ def norm_cui(v):
     s = str(v).strip()
     if re.match(r"^\d+$", s):
         return s
-    # Intentar rescatar secuencia de 5+ dígitos
     m = re.search(r"\d{5,}", s)
     return m.group() if m else ERROR_FLAG
 
@@ -113,7 +151,6 @@ def norm_tipo(v):
     if pd.isna(v):
         return v
     s = re.sub(r"\s+", " ", str(v).strip().upper())
-    # Detectar valores que claramente no son tipo (números, montos)
     if re.match(r"^\d+\.?\d*$", s):
         return ERROR_FLAG
     if s in {"S/N", ""}:
@@ -131,9 +168,7 @@ def norm_monto(v):
     """Número positivo. Acepta coma como separador decimal."""
     if pd.isna(v):
         return v
-    s = str(v).strip().replace(",", ".")
-    # Eliminar espacios internos (separadores de miles)
-    s = s.replace(" ", "")
+    s = str(v).strip().replace(",", ".").replace(" ", "")
     try:
         f = float(s)
         return str(f) if f >= 0 else ERROR_FLAG
@@ -162,7 +197,6 @@ def norm_f9(v):
     if pd.isna(v):
         return v
     s = str(v).strip().upper().replace("Í", "I")
-    # Detectar valores que claramente son de comp (corrimiento de columnas)
     if re.search(r"INFRAESTRUCTURA|EQUIPAMIENTO|MOBILIARIO|INTEGRAL|\d\.\s", s):
         return ERROR_FLAG
     if s in {"SI", "S", "1", "SÍ", "SI SECCIÓN B", "SI SECCION B"}:
@@ -176,52 +210,27 @@ def norm_f9(v):
     return ERROR_FLAG
 
 
-# Mapeo de componentes
 COMP_MAP = {
-    # solo infraestructura
-    "1": "1. Infraestructura.",
-    "1.": "1. Infraestructura.",
-    "1. INFRAESTRUCTURA.": "1. Infraestructura.",
-    "1. INFRAESTRUCTURA": "1. Infraestructura.",
-    "1.INFRAESTRUCTURA": "1. Infraestructura.",
-    "INFRAESTRUCTURA": "1. Infraestructura.",
-    # solo equipamiento
-    "2": "2. Equipamiento.",
-    "2.": "2. Equipamiento.",
-    "2. EQUIPAMIENTO.": "2. Equipamiento.",
-    "2.EQUIPAMIENTO": "2. Equipamiento.",
-    "2. EQUIPAMIENT": "2. Equipamiento.",
-    "2. EQUIPAMIENTO": "2. Equipamiento.",
-    # solo mobiliario
-    "3": "3. Mobiliario.",
-    "3.": "3. Mobiliario.",
-    "3. MOBILIARIO.": "3. Mobiliario.",
-    "3. MOBILIARIO": "3. Mobiliario.",
-    # integral
-    "4": "4. Integral (1, 2 y 3)",
-    "4. INTEGRAL (1, 2 Y 3)": "4. Integral (1, 2 y 3)",
-    "INTEGRAL": "4. Integral (1, 2 y 3)",
-    "(1,2 Y 3)": "4. Integral (1, 2 y 3)",
-    "(1,2,3)": "4. Integral (1, 2 y 3)",
-    "(1-2-3)": "4. Integral (1, 2 y 3)",
-    "1,2,3": "4. Integral (1, 2 y 3)",
-    "1, 2 Y 3": "4. Integral (1, 2 y 3)",
+    "1": "1. Infraestructura.", "1.": "1. Infraestructura.",
+    "1. INFRAESTRUCTURA.": "1. Infraestructura.", "1. INFRAESTRUCTURA": "1. Infraestructura.",
+    "1.INFRAESTRUCTURA": "1. Infraestructura.", "INFRAESTRUCTURA": "1. Infraestructura.",
+    "2": "2. Equipamiento.", "2.": "2. Equipamiento.",
+    "2. EQUIPAMIENTO.": "2. Equipamiento.", "2.EQUIPAMIENTO": "2. Equipamiento.",
+    "2. EQUIPAMIENT": "2. Equipamiento.", "2. EQUIPAMIENTO": "2. Equipamiento.",
+    "3": "3. Mobiliario.", "3.": "3. Mobiliario.",
+    "3. MOBILIARIO.": "3. Mobiliario.", "3. MOBILIARIO": "3. Mobiliario.",
+    "4": "4. Integral (1, 2 y 3)", "4. INTEGRAL (1, 2 Y 3)": "4. Integral (1, 2 y 3)",
+    "INTEGRAL": "4. Integral (1, 2 y 3)", "(1,2 Y 3)": "4. Integral (1, 2 y 3)",
+    "(1,2,3)": "4. Integral (1, 2 y 3)", "(1-2-3)": "4. Integral (1, 2 y 3)",
+    "1,2,3": "4. Integral (1, 2 y 3)", "1, 2 Y 3": "4. Integral (1, 2 y 3)",
     "1 Y 2 Y 3": "4. Integral (1, 2 y 3)",
-    # combos de dos → integral
-    "1,2": "4. Integral (1, 2 y 3)",
-    "1, 2": "4. Integral (1, 2 y 3)",
-    "1 Y 2": "4. Integral (1, 2 y 3)",
-    "1,3": "4. Integral (1, 2 y 3)",
-    "1 Y 3": "4. Integral (1, 2 y 3)",
-    "2,3": "4. Integral (1, 2 y 3)",
-    "2 Y 3": "4. Integral (1, 2 y 3)",
-    "1.2": "4. Integral (1, 2 y 3)",
-    "1.3": "4. Integral (1, 2 y 3)",
-    "2.3": "4. Integral (1, 2 y 3)",
+    "1,2": "4. Integral (1, 2 y 3)", "1, 2": "4. Integral (1, 2 y 3)",
+    "1 Y 2": "4. Integral (1, 2 y 3)", "1,3": "4. Integral (1, 2 y 3)",
+    "1 Y 3": "4. Integral (1, 2 y 3)", "2,3": "4. Integral (1, 2 y 3)",
+    "2 Y 3": "4. Integral (1, 2 y 3)", "1.2": "4. Integral (1, 2 y 3)",
+    "1.3": "4. Integral (1, 2 y 3)", "2.3": "4. Integral (1, 2 y 3)",
     "2. EQUIPAMIENTO 3.MOBILIARIO": "4. Integral (1, 2 y 3)",
     "1,2 Y 3": "4. Integral (1, 2 y 3)",
-    "1,2 Y 3": "4. Integral (1, 2 y 3)",
-    "1 Y 2": "4. Integral (1, 2 y 3)",
 }
 
 
@@ -230,12 +239,10 @@ def norm_comp(v):
     if pd.isna(v):
         return v
     s = re.sub(r"\s+", " ", str(v).strip().upper())
-    # Valores claramente inválidos
     if s in {"-", "_", "-1", "-----------------------", ""}:
         return ERROR_FLAG
     if s in COMP_MAP:
         return COMP_MAP[s]
-    # Detección por contenido
     has1 = bool(re.search(r"\b1\b|INFRA", s))
     has2 = bool(re.search(r"\b2\b|EQUIP", s))
     has3 = bool(re.search(r"\b3\b|MOBIL", s))
@@ -258,21 +265,39 @@ def norm_sino(v):
     if pd.isna(v):
         return v
     s = re.sub(r"\s+", " ", str(v).strip().upper().replace("Í", "I"))
-    # Valores claramente inválidos (guiones, underscores, textos largos)
     if s in {"-", "_", "P", "MO", ""}:
         return ERROR_FLAG
-    # Detectar textos largos que son comentarios (>30 chars y no empiezan con SI/NO)
     if len(s) > 30 and not re.match(r"^(SI|NO)\b", s):
         return ERROR_FLAG
-    # Números que no son 0/1 → error
     if re.match(r"^\d+$", s) and s not in {"0", "1"}:
         return ERROR_FLAG
-    # Normalizar SI
     if re.match(r"^SI\b", s) or s in {"1", "S", "SI"}:
         return "SI"
-    # Normalizar NO
     if re.match(r"^NO\b", s) or s in {"0", "N"}:
         return "NO"
+    return ERROR_FLAG
+
+
+def norm_cod_mod(v):
+    """Limpia códigos modulares: solo dígitos separados por coma.
+    Acepta separadores: coma, /, -, salto de línea, espacios.
+    Guiones sueltos, SI/SÍ/NO, NINGUNA → se vacían (no aplica).
+    Textos descriptivos sin códigos → error."""
+    if pd.isna(v):
+        return v
+    s = str(v).strip()
+    # Valores claramente vacíos/no aplica (guiones, underscores)
+    if re.match(r"^[\s\-_\.]+$", s):
+        return pd.NA  # No aplica, no es error
+    # SI/SÍ/NO/NINGUNA → no aplica (valor repetido de unid o respuesta genérica)
+    s_upper = s.upper().replace("Í", "I")
+    if s_upper in {"SI", "SÍ", "NO", "NINGUNA", "0"}:
+        return pd.NA  # No aplica, no es error
+    # Extraer todas las secuencias de dígitos de 5+ caracteres (códigos modulares)
+    codigos = re.findall(r"\d{5,}", s)
+    if codigos:
+        return ", ".join(codigos)
+    # Si tiene dígitos pero cortos o tiene texto sin códigos → error
     return ERROR_FLAG
 
 
@@ -284,7 +309,6 @@ for idx in df.index:
     elec_val = df.at[idx, "elec"]
     if pd.notna(elec_val):
         s = str(elec_val).strip()
-        # Si es un texto largo (>30 chars) que no es SI/NO → mover a comentarios
         if len(s) > 30 and not re.match(r"^(SI|NO)\b", s.upper()):
             comment = df.at[idx, "comentarios"]
             if pd.isna(comment) or str(comment).strip() == "":
@@ -293,13 +317,12 @@ for idx in df.index:
                 df.at[idx, "comentarios"] = str(comment).strip() + " | " + s
             df.at[idx, "elec"] = pd.NA
 
-# Detectar corrimiento de columnas en f9 (cuando f9 tiene valor de comp)
+# Detectar corrimiento de columnas en f9
 for idx in df.index:
     f9_val = df.at[idx, "f9"]
     if pd.notna(f9_val):
         s = str(f9_val).strip().upper()
         if re.search(r"INFRAESTRUCTURA|EQUIPAMIENTO|MOBILIARIO|INTEGRAL|\d\.\s", s):
-            # Este valor pertenece a comp, no a f9 → marcar f9 como vacío
             df.at[idx, "f9"] = pd.NA
 
 print("Aplicando normalización...")
@@ -312,6 +335,23 @@ df["comp"]   = df["comp"].apply(norm_comp)
 for v in SINO_VARS:
     df[v] = df[v].apply(norm_sino)
 
+# ── 6b. LIMPIAR cod_mod ─────────────────────────────────────────────────────
+# Solo limpiar cod_mod si tiene valor (no vacío)
+df["cod_mod"] = df["cod_mod"].apply(
+    lambda v: norm_cod_mod(v) if pd.notna(v) and str(v).strip() != "" else v
+)
+
+# ── 6c. MARCAR cod_local DUPLICADO ──────────────────────────────────────────
+dup_mask = df["cod_local"].duplicated(keep=False) & df["cod_local"].notna()
+df["cod_local_dup"] = ""
+df.loc[dup_mask, "cod_local_dup"] = "SI"
+n_dup = dup_mask.sum()
+print(f"cod_local duplicados: {n_dup} filas ({df.loc[dup_mask, 'cod_local'].nunique()} locales)")
+
+# ── 6d. RENUMERAR nro ───────────────────────────────────────────────────────
+df["nro"] = range(1, len(df) + 1)
+print(f"nro renumerado: 1 a {len(df)}")
+
 
 # ── 7. MARCAR ERRORES POR CAMPO ─────────────────────────────────────────────
 for v in CHECK_VARS:
@@ -321,9 +361,11 @@ df["tiene_error"] = df[[f"err_{v}" for v in CHECK_VARS]].max(axis=1)
 
 
 # ── 8. SEPARAR BASES ────────────────────────────────────────────────────────
-df_clean = df[df["tiene_error"] == 0].drop(
-    columns=[f"err_{v}" for v in CHECK_VARS] + ["tiene_error"]
-)
+# Columnas de salida (sin err_*)
+out_cols = [c for c in df.columns
+            if not c.startswith("err_") and c != "tiene_error"]
+
+df_clean = df[df["tiene_error"] == 0][out_cols].copy()
 df_errors = df[df["tiene_error"] == 1].copy()
 
 # Reemplazar flag por etiqueta legible en base de errores
@@ -344,9 +386,12 @@ for v in CHECK_VARS:
 # ── 9. EXPORTAR ─────────────────────────────────────────────────────────────
 with pd.ExcelWriter(OUT_CLEAN, engine="openpyxl") as w:
     df_clean.to_excel(w, index=False, sheet_name="Base Limpia")
+    DICCIONARIO.to_excel(w, index=False, sheet_name="Diccionario de Datos")
 
 with pd.ExcelWriter(OUT_ERRORS, engine="openpyxl") as w:
     df_errors.to_excel(w, index=False, sheet_name="Registros con Errores")
+    dicc_err = pd.concat([DICCIONARIO, DICCIONARIO_ERRORES], ignore_index=True)
+    dicc_err.to_excel(w, index=False, sheet_name="Diccionario de Datos")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -360,7 +405,6 @@ if INPUT_MINEDU.exists():
     minedu = pd.read_excel(INPUT_MINEDU, sheet_name="Data", dtype=str)
     print(f"Base MINEDU cargada: {len(minedu):,} registros")
 
-    # Normalizar tipo MINEDU para comparación
     def tipo_minedu(v):
         if pd.isna(v):
             return v
@@ -374,16 +418,21 @@ if INPUT_MINEDU.exists():
         return s
 
     minedu["tipo_norm"] = minedu["DES_TIPO_FORMATO"].apply(tipo_minedu)
-    minedu["cui_norm"] = minedu["CODIGO_UNICO"].str.strip()
+    # Asegurar que CUI sea string limpio (sin .0)
+    minedu["cui_norm"] = minedu["CODIGO_UNICO"].apply(
+        lambda v: str(int(float(v))) if pd.notna(v) else v
+    )
 
-    # Conjunto de CUIs válidos MINEDU
     minedu_cuis = set(minedu["cui_norm"].dropna())
 
-    # Usar la base completa (limpia + errores) para el cruce
+    # Usar base completa para cruce, asegurar CUI como string limpio
     df_all = df.copy()
-    # Solo filas con CUI numérico válido (no ERROR_FLAG)
     df_cruce = df_all[df_all["cui"].apply(lambda x: str(x) != ERROR_FLAG and pd.notna(x))].copy()
-    anexo_cuis = set(df_cruce["cui"].str.strip())
+    # Limpiar CUI: quitar .0 si viene de float
+    df_cruce["cui"] = df_cruce["cui"].apply(
+        lambda v: str(int(float(v))) if pd.notna(v) and re.match(r"^\d+\.?\d*$", str(v).strip()) else str(v).strip()
+    )
+    anexo_cuis = set(df_cruce["cui"])
 
     match_cuis = minedu_cuis & anexo_cuis
     solo_minedu = minedu_cuis - anexo_cuis
@@ -395,38 +444,30 @@ if INPUT_MINEDU.exists():
     print(f"CUIs solo en MINEDU (no declarados en Anexo1): {len(solo_minedu)}")
     print(f"CUIs solo en Anexo1 (no en Base MINEDU): {len(solo_anexo)}")
 
-    # ── Construir reporte de cruce ──
     rows_cruce = []
 
-    # 1) CUIs que coinciden: comparar tipo, monto, f9, avance
     for cui in sorted(match_cuis):
         m = minedu[minedu["cui_norm"] == cui].iloc[0]
-        a_rows = df_cruce[df_cruce["cui"].str.strip() == cui]
+        a_rows = df_cruce[df_cruce["cui"] == cui]
         for _, a in a_rows.iterrows():
             row = {"cui": cui, "status_cruce": "COINCIDE"}
-            # Tipo
             row["tipo_anexo1"] = a.get("tipo", "")
             row["tipo_minedu"] = m.get("tipo_norm", "")
             row["tipo_ok"] = "OK" if row["tipo_anexo1"] == row["tipo_minedu"] else "DIFERENTE"
-            # Monto
             row["monto_anexo1"] = a.get("monto", "")
             row["monto_minedu"] = m.get("COSTO_ACTUALIZADO_BI", "")
-            # F9
             row["f9_anexo1"] = a.get("f9", "")
             row["f9_minedu"] = m.get("TIENE_F9", "")
             row["f9_ok"] = "OK" if str(row["f9_anexo1"]).upper() == str(row["f9_minedu"]).upper() else "DIFERENTE"
-            # Avance
             row["avance_anexo1"] = a.get("avance", "")
             row["avance_minedu_f9"] = m.get("AVANCE_FISICO_F9", "")
             row["avance_minedu_f12b"] = m.get("AVANCE_FISICO_F12B", "")
-            # Estado MINEDU
             row["estado_minedu"] = m.get("ESTADO", "")
             row["situacion_minedu"] = m.get("SITUACION", "")
             row["nombre_ie"] = a.get("nombre_ie", "")
             row["nombre_inv_minedu"] = m.get("NOMBRE_INVERSION", "")
             rows_cruce.append(row)
 
-    # 2) CUIs solo en MINEDU
     for cui in sorted(solo_minedu):
         m = minedu[minedu["cui_norm"] == cui].iloc[0]
         rows_cruce.append({
@@ -440,9 +481,8 @@ if INPUT_MINEDU.exists():
             "nombre_inv_minedu": m.get("NOMBRE_INVERSION", ""),
         })
 
-    # 3) CUIs solo en Anexo1 (muestra: no están validados por MINEDU)
     for cui in sorted(solo_anexo):
-        a_rows = df_cruce[df_cruce["cui"].str.strip() == cui]
+        a_rows = df_cruce[df_cruce["cui"] == cui]
         for _, a in a_rows.iterrows():
             rows_cruce.append({
                 "cui": cui,
@@ -456,7 +496,6 @@ if INPUT_MINEDU.exists():
 
     df_cruce_out = pd.DataFrame(rows_cruce)
 
-    # Ordenar columnas
     col_order = ["cui", "status_cruce", "nombre_ie", "nombre_inv_minedu",
                  "tipo_anexo1", "tipo_minedu", "tipo_ok",
                  "monto_anexo1", "monto_minedu",
@@ -466,13 +505,11 @@ if INPUT_MINEDU.exists():
     col_order = [c for c in col_order if c in df_cruce_out.columns]
     df_cruce_out = df_cruce_out[col_order]
 
-    # Exportar
     with pd.ExcelWriter(OUT_CRUCE, engine="openpyxl") as w:
         df_cruce_out.to_excel(w, index=False, sheet_name="Validacion Cruce")
 
     print(f"\nReporte de cruce generado: {OUT_CRUCE}")
 
-    # Resumen de discrepancias
     if len(match_cuis) > 0:
         coinciden = df_cruce_out[df_cruce_out["status_cruce"] == "COINCIDE"]
         if "tipo_ok" in coinciden.columns:
