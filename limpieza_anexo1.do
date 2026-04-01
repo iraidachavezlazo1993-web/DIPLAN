@@ -390,8 +390,6 @@ if _rc == 0 {
          avance_anexo1 avance_f9_minedu avance_f12b_minedu ///
          estado_minedu situacion_minedu
 
-    drop _merge
-
     export excel using "${rep_cons_o}\Anexo1_validacion_cruce.xlsx", ///
         firstrow(variables) sheet("Validacion Cruce") replace
 
