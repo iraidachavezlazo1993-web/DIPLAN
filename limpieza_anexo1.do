@@ -276,7 +276,130 @@ foreach v in cui tipo monto avance f9 comp unid demol nueva reforz cerco sust am
     if `r(N)' > 0 di "  err_`v': `r(N)' registros"
 }
 
+// ***************************************************************
+// 11. VALIDACIÓN CRUZADA CON BASE DE INVERSIONES MINEDU
+// ***************************************************************
+di ""
+di "============================================================"
+di "VALIDACIÓN CRUZADA CON BASE DE INVERSIONES MINEDU"
+di "============================================================"
+
+* Guardar base actual en temporal
+tempfile anexo1_temp
+save `anexo1_temp', replace
+
+* Importar Base MINEDU
+capture confirm file "${rep_cons_i}\2026.03.23 Base de Inversiones_.xlsx"
+if _rc == 0 {
+    preserve
+        import excel "${rep_cons_i}\2026.03.23 Base de Inversiones_.xlsx", ///
+            sheet("Data") firstrow clear
+
+        * Renombrar campos clave
+        rename CODIGO_UNICO cui_minedu
+        rename DES_TIPO_FORMATO tipo_minedu_raw
+        rename COSTO_ACTUALIZADO_BI monto_minedu
+        rename TIENE_F9 f9_minedu
+        rename AVANCE_FISICO_F9 avance_f9_minedu
+        rename AVANCE_FISICO_F12B avance_f12b_minedu
+        rename ESTADO estado_minedu
+        rename SITUACION situacion_minedu
+        rename NOMBRE_INVERSION nombre_inv_minedu
+
+        * Normalizar tipo MINEDU
+        gen tipo_minedu = ""
+        replace tipo_minedu = "IOARR" if regexm(upper(tipo_minedu_raw), "IOARR")
+        replace tipo_minedu = "PI"    if regexm(upper(tipo_minedu_raw), "PROYECTO") & tipo_minedu == ""
+        replace tipo_minedu = "IRI"   if regexm(upper(tipo_minedu_raw), "IRI") & tipo_minedu == ""
+
+        replace cui_minedu = strtrim(cui_minedu)
+
+        keep cui_minedu tipo_minedu monto_minedu f9_minedu ///
+             avance_f9_minedu avance_f12b_minedu estado_minedu ///
+             situacion_minedu nombre_inv_minedu
+
+        tempfile minedu_temp
+        save `minedu_temp', replace
+
+        count
+        di "Base MINEDU cargada: `r(N)' registros"
+    restore
+
+    * Cargar base Anexo1 de nuevo
+    use `anexo1_temp', clear
+
+    * Solo filas con CUI válido (no error)
+    keep if err_cui == 0 & !missing(cui)
+
+    * Limpiar CUI para merge
+    replace cui = strtrim(cui)
+
+    * Renombrar para merge
+    rename cui cui_minedu
+    rename tipo tipo_anexo1
+    rename monto monto_anexo1
+    rename f9 f9_anexo1
+    rename avance avance_anexo1
+
+    * Merge con Base MINEDU
+    merge m:1 cui_minedu using `minedu_temp'
+
+    * Clasificar resultado del cruce
+    gen status_cruce = ""
+    replace status_cruce = "COINCIDE" if _merge == 3
+    replace status_cruce = "SOLO EN ANEXO1 (no validado por MINEDU)" if _merge == 1
+    replace status_cruce = "SOLO EN MINEDU (no declarado por GR/GL)" if _merge == 2
+
+    * Para los que coinciden, comparar campos
+    gen tipo_ok = ""
+    replace tipo_ok = "OK" if tipo_anexo1 == tipo_minedu & _merge == 3
+    replace tipo_ok = "DIFERENTE" if tipo_anexo1 != tipo_minedu & _merge == 3
+
+    gen f9_ok = ""
+    replace f9_ok = "OK" if upper(f9_anexo1) == upper(f9_minedu) & _merge == 3
+    replace f9_ok = "DIFERENTE" if upper(f9_anexo1) != upper(f9_minedu) & _merge == 3
+
+    * Resumen
+    di ""
+    qui count if _merge == 3
+    di "CUIs que coinciden: `r(N)'"
+    qui count if _merge == 1
+    di "CUIs solo en Anexo1: `r(N)'"
+    qui count if _merge == 2
+    di "CUIs solo en MINEDU: `r(N)'"
+
+    qui count if tipo_ok == "DIFERENTE"
+    di "Tipo discrepante: `r(N)'"
+    qui count if f9_ok == "DIFERENTE"
+    di "F9 discrepante: `r(N)'"
+
+    * Exportar reporte de cruce
+    rename cui_minedu cui
+    keep cui status_cruce nombre_ie nombre_inv_minedu ///
+         tipo_anexo1 tipo_minedu tipo_ok ///
+         monto_anexo1 monto_minedu ///
+         f9_anexo1 f9_minedu f9_ok ///
+         avance_anexo1 avance_f9_minedu avance_f12b_minedu ///
+         estado_minedu situacion_minedu
+
+    drop _merge
+
+    export excel using "${rep_cons_o}\Anexo1_validacion_cruce.xlsx", ///
+        firstrow(variables) sheet("Validacion Cruce") replace
+
+    di ""
+    di "Reporte de cruce generado: ${rep_cons_o}\Anexo1_validacion_cruce.xlsx"
+}
+else {
+    di "AVISO: No se encontró la Base de Inversiones MINEDU en ${rep_cons_i}"
+    di "  Se omite la validación cruzada."
+}
+
+* Restaurar base original
+use `anexo1_temp', clear
+
 di ""
 di "Archivos generados:"
 di "  ${rep_cons_o}\Anexo1_base_limpia.xlsx"
 di "  ${rep_cons_o}\Anexo1_base_errores.xlsx"
+di "  ${rep_cons_o}\Anexo1_validacion_cruce.xlsx"
