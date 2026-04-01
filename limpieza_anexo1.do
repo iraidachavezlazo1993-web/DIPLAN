@@ -262,8 +262,8 @@ preserve
     drop err_* tiene_error
     count
     di "Registros limpios: `r(N)'"
-    save "${rep_cons_o}\Anexo1_base_limpia.dta", replace
-    export excel using "${rep_cons_o}\Anexo1_base_limpia.xlsx", ///
+    save "${rep_cons_o}\Anexo1_base_limpia_stata.dta", replace
+    export excel using "${rep_cons_o}\Anexo1_base_limpia_stata.xlsx", ///
         firstrow(variables) sheet("Base Limpia") replace
 restore
 
@@ -272,8 +272,8 @@ preserve
     keep if tiene_error == 1
     count
     di "Registros con errores: `r(N)'"
-    save "${rep_cons_o}\Anexo1_base_errores.dta", replace
-    export excel using "${rep_cons_o}\Anexo1_base_errores.xlsx", ///
+    save "${rep_cons_o}\Anexo1_base_errores_stata.dta", replace
+    export excel using "${rep_cons_o}\Anexo1_base_errores_stata.xlsx", ///
         firstrow(variables) sheet("Registros con Errores") replace
 restore
 
@@ -390,11 +390,11 @@ if _rc == 0 {
          avance_anexo1 avance_f9_minedu avance_f12b_minedu ///
          estado_minedu situacion_minedu
 
-    export excel using "${rep_cons_o}\Anexo1_validacion_cruce.xlsx", ///
+    export excel using "${rep_cons_o}\Anexo1_validacion_cruce_stata.xlsx", ///
         firstrow(variables) sheet("Validacion Cruce") replace
 
     di ""
-    di "Reporte de cruce generado: ${rep_cons_o}\Anexo1_validacion_cruce.xlsx"
+    di "Reporte de cruce generado: ${rep_cons_o}\Anexo1_validacion_cruce_stata.xlsx"
 }
 else {
     di "AVISO: No se encontró la Base de Inversiones MINEDU en ${rep_cons_i}"
@@ -406,6 +406,6 @@ use `anexo1_temp', clear
 
 di ""
 di "Archivos generados:"
-di "  ${rep_cons_o}\Anexo1_base_limpia.xlsx"
-di "  ${rep_cons_o}\Anexo1_base_errores.xlsx"
+di "  ${rep_cons_o}\Anexo1_base_limpia_stata.xlsx"
+di "  ${rep_cons_o}\Anexo1_base_errores_stata.xlsx"
 di "  ${rep_cons_o}\Anexo1_validacion_cruce.xlsx"
