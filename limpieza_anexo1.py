@@ -25,13 +25,17 @@ import pandas as pd
 import re
 from pathlib import Path
 
-# ── 0. RUTAS ─────────────────────────────────────────────────────────────────
-BASE_DIR   = Path(__file__).resolve().parent
-INPUT      = BASE_DIR / "Anexo_1_avance_GR_GL.xlsx"
-INPUT_MINEDU = BASE_DIR / "2026.03.23 Base de Inversiones_.xlsx"
-OUT_CLEAN    = BASE_DIR / "Anexo1_base_limpia.xlsx"
-OUT_ERRORS   = BASE_DIR / "Anexo1_base_errores.xlsx"
-OUT_CRUCE    = BASE_DIR / "Anexo1_validacion_cruce.xlsx"
+# ── 0. RUTAS (misma estructura que el do-file de Stata) ──────────────────────
+reporte      = Path(r"C:\Users\iraid\Documents\DISCO TERA\MINEDU\TRABAJO-MINEDU\01_MINEDU")
+rep_cons_i   = reporte / "01_input"
+rep_cons_o   = reporte / "03_output"
+rep_cons_t   = reporte / "04_temporal"
+
+INPUT        = rep_cons_i / "Anexo_1_avance_GR_GL.xlsx"
+INPUT_MINEDU = rep_cons_i / "2026.03.23 Base de Inversiones_.xlsx"
+OUT_CLEAN    = rep_cons_o / "Anexo1_base_limpia.xlsx"
+OUT_ERRORS   = rep_cons_o / "Anexo1_base_errores.xlsx"
+OUT_CRUCE    = rep_cons_o / "Anexo1_validacion_cruce.xlsx"
 
 # ── 1. IMPORTAR ──────────────────────────────────────────────────────────────
 # header=0 → fila 1 del Excel como nombres de columna (igual que Stata firstrow)
