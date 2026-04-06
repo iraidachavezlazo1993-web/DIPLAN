@@ -285,11 +285,11 @@ save "${rep_cons_t}\anexo1_limpio_pre.dta", replace
 * -------------------------------------------------------------------------
 * 13. VALIDAR CONTRA VINCULACIONES
 * -------------------------------------------------------------------------
-* busco el archivo de vinculaciones, tiene varios nombres posibles
+* el archivo se llama Vinculaciones_compartido
 
 local found_vinc = 0
-foreach fname in "vinculaciones.xlsx" "Vinculaciones.xlsx" "VINCULACIONES.xlsx" ///
-	"vinculaciones_cui.xlsx" "Vinculaciones_CUI.xlsx" "base_vinculaciones.xlsx" {
+foreach fname in "Vinculaciones_compartido.xlsx" "Vinculaciones_compartido.csv" ///
+	"Vinculaciones_compartido_03feb206.xlsx" {
 	capture confirm file "${rep_cons_i}\\`fname'"
 	if _rc == 0 {
 		local vinc_file = "`fname'"
@@ -302,16 +302,24 @@ if `found_vinc' == 1 {
 	di as text ">>> Encontre archivo de vinculaciones: `vinc_file'"
 
 	preserve
-	import excel using "${rep_cons_i}\\`vinc_file'", firstrow clear
+	import excel using "${rep_cons_i}\\`vinc_file'", sheet("Vinculaciones") firstrow clear
 
 	* renombro las columnas que me interesan
 	capture rename CUI cui_vinc
+	capture rename CódigoModular cod_mod_vinc
+	capture rename CódigoLocal cod_local_vinc
+	capture rename NombreIIEE nombre_ie_vinc
+	* por si vienen con otros nombres (sin tilde, etc)
 	capture rename CodigoLocal cod_local_vinc
+	capture rename CodigoModular cod_mod_vinc
 	capture rename NombreIE nombre_ie_vinc
-	* por si vienen con otros nombres
 	capture rename CODIGOUNICO cui_vinc
 	capture rename CODIGOLOCAL cod_local_vinc
-	capture rename NOMBREIE nombre_ie_vinc
+
+	* asegurar que CUI sea string limpio
+	capture tostring cui_vinc, replace force
+	replace cui_vinc = strtrim(cui_vinc)
+	replace cui_vinc = regexr(cui_vinc, "\.0+$", "")
 
 	* me quedo con lo que necesito
 	keep cui_vinc cod_local_vinc nombre_ie_vinc
@@ -343,7 +351,8 @@ if `found_vinc' == 1 {
 	di as result "   Flags de vinculaciones generados"
 }
 else {
-	di as error ">>> No encontré archivo de vinculaciones, me lo salto"
+	di as error ">>> No encontre archivo de vinculaciones, me lo salto"
+	di as error "   Busque: Vinculaciones_compartido.xlsx en ${rep_cons_i}"
 	gen byte flag_nombre_ie = 0
 	gen byte flag_cod_local = 0
 }

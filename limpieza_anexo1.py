@@ -22,7 +22,7 @@ temporal = ruta / "04_temporal"
 archivo_anexo1 = entrada / "Anexo_1_avance_GR_GL.xlsx"
 
 archivo_vinc = None
-for nombre in ["Vinculaciones_compartido_03feb206.xlsx", "Vinculaciones_compartido.xlsx"]:
+for nombre in ["Vinculaciones_compartido.xlsx", "Vinculaciones_compartido_03feb206.xlsx"]:
     if (entrada / nombre).exists():
         archivo_vinc = entrada / nombre
         break
