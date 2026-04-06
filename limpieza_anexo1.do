@@ -397,66 +397,156 @@ di as result "   Flags de inversiones generados"
 save "${rep_cons_t}\anexo1_limpio_validado.dta", replace
 
 * -------------------------------------------------------------------------
-* 15. SEPARAR BASES
+* 15. ARMAR LOS 2 CAMPOS DE VALIDACION
 * -------------------------------------------------------------------------
 
-* genero indicador de si tiene algun error
-egen tiene_error = rowmax(err_*)
-label var tiene_error "Tiene al menos un error"
+* --- Validacion_1: Completo / Incompleto / Error ---
+* primero armo un string con los errores
+gen str200 Validacion_1 = ""
 
-* campos vacios: verifico que los campos clave no esten vacios
-gen byte campos_vacios = 0
-replace campos_vacios = 1 if cui == "" | tipo == "" | comp == ""
-replace campos_vacios = 1 if monto == . & monto_orig == ""
-replace campos_vacios = 1 if region == ""
-label var campos_vacios "Le faltan campos obligatorios"
+* chequeo errores
+local campos_err "cui tipo monto avance f9 comp unid cod_mod demol nueva reforz cerco sust ampl mobil agua elec"
+foreach v of local campos_err {
+	replace Validacion_1 = Validacion_1 + "`v', " if err_`v' == 1
+}
+* si tiene errores, le pongo el prefijo
+replace Validacion_1 = "Error: " + substr(Validacion_1, 1, strlen(Validacion_1)-2) if Validacion_1 != ""
 
-* clasifico
-gen str20 estado = ""
-replace estado = "LIMPIO" if tiene_error == 0 & campos_vacios == 0
-replace estado = "CON ERRORES" if tiene_error == 1 & campos_vacios == 0
-replace estado = "EXCLUIDO" if campos_vacios == 1
-label var estado "Estado del registro"
+* para los que no tienen error, chequeo campos vacios
+local campos_req "cod_local region provincia distrito nombre_ie cui tipo comp unid demol nueva reforz cerco sust ampl mobil agua elec"
+gen str200 _vacios = ""
+foreach v of local campos_req {
+	capture confirm string variable `v'
+	if _rc == 0 {
+		replace _vacios = _vacios + "`v', " if `v' == "" & Validacion_1 == ""
+	}
+	else {
+		replace _vacios = _vacios + "`v', " if `v' == . & Validacion_1 == ""
+	}
+}
+* monto y avance son numericos
+replace _vacios = _vacios + "monto, " if monto == . & Validacion_1 == ""
+replace _vacios = _vacios + "avance, " if avance == . & Validacion_1 == ""
+* f9 puede ser string
+capture confirm string variable f9
+if _rc == 0 {
+	replace _vacios = _vacios + "f9, " if f9 == "" & Validacion_1 == ""
+}
+
+replace Validacion_1 = "Incompleto: " + substr(_vacios, 1, strlen(_vacios)-2) if _vacios != "" & Validacion_1 == ""
+replace Validacion_1 = "Completo" if Validacion_1 == ""
+drop _vacios
+label var Validacion_1 "Completo / Incompleto / Error"
+
+* --- Validacion_2: ya viene de los flags de vinculaciones e inversiones ---
+gen str500 Validacion_2 = ""
+replace Validacion_2 = Validacion_2 + "nombre_ie difiere (Vinculaciones) | " if flag_nombre_ie == 1
+replace Validacion_2 = Validacion_2 + "cod_local difiere (Vinculaciones) | " if flag_cod_local == 1
+replace Validacion_2 = Validacion_2 + "tipo difiere (Base Inversiones) | " if flag_tipo == 1
+replace Validacion_2 = Validacion_2 + "f9 difiere (Base Inversiones) | " if flag_f9 == 1
+* quitar el ultimo " | "
+replace Validacion_2 = substr(Validacion_2, 1, strlen(Validacion_2)-3) if Validacion_2 != ""
+label var Validacion_2 "Diferencias con bases maestras"
 
 save "${rep_cons_t}\anexo1_clasificado.dta", replace
 
+* contar
+quietly count if Validacion_1 == "Completo"
+local n_completo = r(N)
+quietly count if regexm(Validacion_1, "^Incompleto")
+local n_incompleto = r(N)
+quietly count if regexm(Validacion_1, "^Error")
+local n_error = r(N)
+quietly count if Validacion_2 != ""
+local n_diffs = r(N)
+
 * -------------------------------------------------------------------------
-* 16. EXPORTAR
+* 16. EXPORTAR (solo 2 Excel)
 * -------------------------------------------------------------------------
 
-* base limpia
-preserve
-keep if estado == "LIMPIO"
-save "${rep_cons_o}\anexo1_limpia_stata.dta", replace
-export excel using "${rep_cons_o}\anexo1_limpia_stata.xlsx", firstrow(varlabels) replace
-local n_limpia = _N
-restore
+* columnas que no quiero exportar
+capture drop err_* tiene_error campos_vacios estado cui_limpio _*
 
-* base con errores
-preserve
-keep if estado == "CON ERRORES"
-save "${rep_cons_o}\anexo1_errores_stata.dta", replace
-export excel using "${rep_cons_o}\anexo1_errores_stata.xlsx", firstrow(varlabels) replace
-local n_errores = _N
-restore
+* --- Anexo_validado: datos originales con las 2 validaciones ---
+save "${rep_cons_o}\Anexo_validado_stata.dta", replace
+export excel using "${rep_cons_o}\Anexo_validado_stata.xlsx", ///
+	firstrow(variables) sheet("Anexo Validado") replace
+di as result "   Anexo_validado: `=_N' registros"
 
-* base excluidos
-preserve
-keep if estado == "EXCLUIDO"
-save "${rep_cons_o}\anexo1_excluidos_stata.dta", replace
-export excel using "${rep_cons_o}\anexo1_excluidos_stata.xlsx", firstrow(varlabels) replace
-local n_excluidos = _N
-restore
+* --- Anexo_limpio: con correcciones de maestras aplicadas ---
+* aplico las correcciones de vinculaciones
+capture confirm variable flag_nombre_ie
+if _rc == 0 {
+	* recargo vinculaciones para aplicar correcciones
+	preserve
+	capture {
+		import excel using "${rep_cons_i}\Vinculaciones_compartido.xlsx", ///
+			sheet("Vinculaciones") firstrow clear
+		capture rename CUI cui_vinc
+		capture rename CódigoLocal cod_local_vinc
+		capture rename NombreIIEE nombre_ie_vinc
+		capture rename CodigoLocal cod_local_vinc
+		capture rename NombreIE nombre_ie_vinc
+		capture tostring cui_vinc, replace force
+		replace cui_vinc = strtrim(cui_vinc)
+		replace cui_vinc = regexr(cui_vinc, "\.0+$", "")
+		capture tostring cod_local_vinc, replace force
+		replace cod_local_vinc = strtrim(cod_local_vinc)
+		replace cod_local_vinc = regexr(cod_local_vinc, "\.0+$", "")
+		keep cui_vinc cod_local_vinc nombre_ie_vinc
+		rename cui_vinc cui
+		duplicates drop cui, force
+		tempfile vinc_corr
+		save `vinc_corr', replace
+	}
+	restore
 
-* resumen por region
-preserve
-collapse (count) nro (sum) tiene_error campos_vacios, by(region)
-rename nro total_registros
-rename tiene_error total_errores
-rename campos_vacios total_excluidos
-gen total_limpios = total_registros - total_errores - total_excluidos
-export excel using "${rep_cons_o}\resumen_por_region_stata.xlsx", firstrow(variables) replace
-restore
+	merge m:1 cui using `vinc_corr', keep(master match) gen(_mc)
+	replace nombre_ie = nombre_ie_vinc if _mc == 3 & nombre_ie_vinc != ""
+	replace cod_local = cod_local_vinc if _mc == 3 & cod_local_vinc != "" & (cod_local == "" | missing(cod_local))
+	capture drop nombre_ie_vinc cod_local_vinc _mc
+}
+
+* recalculo Validacion_1 despues de correcciones
+drop Validacion_1
+gen str200 Validacion_1 = ""
+foreach v of local campos_err {
+	capture confirm variable err_`v'
+	if _rc == 0 {
+		replace Validacion_1 = Validacion_1 + "`v', " if err_`v' == 1
+	}
+}
+* si no hay err_ (ya los dropeamos), chequeo por <<ERROR>>
+foreach v in cui tipo comp unid demol nueva reforz cerco sust ampl mobil agua elec {
+	capture confirm string variable `v'
+	if _rc == 0 {
+		replace Validacion_1 = Validacion_1 + "`v', " if `v' == "<<ERROR>>" & Validacion_1 == ""
+	}
+}
+replace Validacion_1 = "Error: " + substr(Validacion_1, 1, strlen(Validacion_1)-2) if Validacion_1 != ""
+
+gen str200 _vacios2 = ""
+foreach v of local campos_req {
+	capture confirm string variable `v'
+	if _rc == 0 {
+		replace _vacios2 = _vacios2 + "`v', " if `v' == "" & Validacion_1 == ""
+	}
+	else {
+		replace _vacios2 = _vacios2 + "`v', " if `v' == . & Validacion_1 == ""
+	}
+}
+replace _vacios2 = _vacios2 + "monto, " if monto == . & Validacion_1 == ""
+replace _vacios2 = _vacios2 + "avance, " if avance == . & Validacion_1 == ""
+replace Validacion_1 = "Incompleto: " + substr(_vacios2, 1, strlen(_vacios2)-2) if _vacios2 != "" & Validacion_1 == ""
+replace Validacion_1 = "Completo" if Validacion_1 == ""
+drop _vacios2
+label var Validacion_1 "Completo / Incompleto / Error"
+
+capture drop flag_* es_duplicado
+save "${rep_cons_o}\Anexo_limpio_stata.dta", replace
+export excel using "${rep_cons_o}\Anexo_limpio_stata.xlsx", ///
+	firstrow(variables) sheet("Anexo Limpio") replace
+di as result "   Anexo_limpio: `=_N' registros"
 
 * -------------------------------------------------------------------------
 * 17. RESUMEN FINAL
@@ -468,42 +558,15 @@ di as result " RESUMEN DE LIMPIEZA - ANEXO 1"
 di as text "=========================================="
 di as text ""
 di as text "Total registros:   " _N
-di as result "  Limpios:         `n_limpia'"
-di as result "  Con errores:     `n_errores'"
-di as result "  Excluidos:       `n_excluidos'"
-di as text ""
-
-* errores por campo
-di as text "------------------------------------------"
-di as text " ERRORES POR CAMPO"
-di as text "------------------------------------------"
-
-foreach v in cui tipo monto avance f9 comp unid cod_mod demol nueva reforz cerco sust ampl mobil agua elec {
-	quietly count if err_`v' == 1
-	local nerr = r(N)
-	if `nerr' > 0 {
-		di as error "  err_`v':  `nerr'"
-	}
-	else {
-		di as text "  err_`v':  0"
-	}
-}
+di as result "  Completos:       `n_completo'"
+di as result "  Incompletos:     `n_incompleto'"
+di as result "  Con errores:     `n_error'"
+di as result "  Diffs vs maestras: `n_diffs'"
 
 di as text ""
-di as text "------------------------------------------"
-di as text " DUPLICADOS"
-di as text "------------------------------------------"
-quietly count if es_duplicado == 1
-di as text "  Registros duplicados (cod_local+cui): " r(N)
-
-di as text ""
-di as text "------------------------------------------"
-di as text " REGISTROS POR ESTADO"
-di as text "------------------------------------------"
-tab estado
-
-di as text ""
-di as result ">>> Archivos exportados en: ${rep_cons_o}"
+di as result ">>> Archivos en: ${rep_cons_o}"
+di as text "    Anexo_validado_stata.xlsx (datos originales + validaciones)"
+di as text "    Anexo_limpio_stata.xlsx (con correcciones de maestras)"
 di as text "=========================================="
 
 * fin
