@@ -311,31 +311,41 @@ capture tostring nombre_ie_vinc, replace force
 
 keep cui_vinc cod_local_vinc nombre_ie_vinc
 rename cui_vinc cui
+rename cod_local_vinc cod_local_v
 
-duplicates drop cui, force
+* un CUI puede tener varios cod_local, me quedo con las combinaciones unicas
+duplicates drop cui cod_local_v, force
 
 tempfile vinculaciones
 save `vinculaciones', replace
 restore
 
-merge m:1 cui using `vinculaciones', keep(master match) gen(_merge_vinc)
-
-* despues del merge, cod_local_vinc puede ser numerico y cod_local string
-* o viceversa, asi que convierto ambos a string para comparar
-capture tostring cod_local_vinc, replace force
+* asegurar que cod_local del anexo sea string limpio para el merge
 capture tostring cod_local, replace force
+replace cod_local = strtrim(cod_local)
+replace cod_local = regexr(cod_local, "\.0+$", "")
+
+* renombro cod_local temporalmente para el merge
+rename cod_local cod_local_v
+
+* merge por CUI + cod_local (la combinacion exacta)
+merge m:1 cui cod_local_v using `vinculaciones', keep(master match) gen(_merge_vinc)
+
+* devuelvo el nombre original
+rename cod_local_v cod_local
+
 capture tostring nombre_ie_vinc, replace force
 
 gen byte flag_nombre_ie = 0
-gen byte flag_cod_local = 0
 
 replace flag_nombre_ie = 1 if _merge_vinc == 3 & upper(strtrim(nombre_ie)) != upper(strtrim(nombre_ie_vinc)) & !missing(nombre_ie_vinc) & nombre_ie_vinc != "" & nombre_ie_vinc != "."
-replace flag_cod_local = 1 if _merge_vinc == 3 & strtrim(cod_local) != strtrim(cod_local_vinc) & !missing(cod_local_vinc) & cod_local_vinc != "" & cod_local_vinc != "."
 
 label var flag_nombre_ie "Nombre IE difiere de vinculaciones"
-label var flag_cod_local "Cod local difiere de vinculaciones"
 
-capture drop nombre_ie_vinc cod_local_vinc _merge_vinc
+* ya no comparo cod_local porque el merge fue por CUI+cod_local
+gen byte flag_cod_local = 0
+
+capture drop nombre_ie_vinc _merge_vinc
 
 di as result "   Flags de vinculaciones generados"
 
@@ -495,16 +505,25 @@ if _rc == 0 {
 		replace cod_local_vinc = regexr(cod_local_vinc, "\.0+$", "")
 		keep cui_vinc cod_local_vinc nombre_ie_vinc
 		rename cui_vinc cui
-		duplicates drop cui, force
+		rename cod_local_vinc cod_local_v
+		* merge por CUI + cod_local
+		duplicates drop cui cod_local_v, force
 		tempfile vinc_corr
 		save `vinc_corr', replace
 	}
 	restore
 
-	merge m:1 cui using `vinc_corr', keep(master match) gen(_mc)
+	* asegurar tipos compatibles
+	capture tostring cod_local, replace force
+	replace cod_local = strtrim(cod_local)
+	replace cod_local = regexr(cod_local, "\.0+$", "")
+	rename cod_local cod_local_v
+
+	merge m:1 cui cod_local_v using `vinc_corr', keep(master match) gen(_mc)
+	rename cod_local_v cod_local
+
 	replace nombre_ie = nombre_ie_vinc if _mc == 3 & nombre_ie_vinc != ""
-	replace cod_local = cod_local_vinc if _mc == 3 & cod_local_vinc != "" & (cod_local == "" | missing(cod_local))
-	capture drop nombre_ie_vinc cod_local_vinc _mc
+	capture drop nombre_ie_vinc _mc
 }
 
 * recalculo Validacion_1 despues de correcciones

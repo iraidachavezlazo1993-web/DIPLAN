@@ -266,30 +266,51 @@ df["cui_limpio"] = df["cui"].apply(
 
 # --- Cruzar con Vinculaciones ---
 if vinc is not None:
+    # limpio cod_local de vinculaciones
+    vinc["cod_local_limpio"] = vinc["Código Local"].apply(
+        lambda x: str(int(float(x))) if pd.notna(x) and re.match(r'^\d+\.?\d*$', str(x).strip()) else str(x).strip() if pd.notna(x) else ""
+    )
+
+    # armo lookup por CUI+cod_local (la combinacion exacta)
+    vinc_por_cui_local = vinc.drop_duplicates(subset=["cui_limpio","cod_local_limpio"], keep="first")
+    vinc_por_cui_local = vinc_por_cui_local.set_index(["cui_limpio","cod_local_limpio"])
+
+    # tambien armo lookup solo por CUI (para cuando el cod_local no matchea)
     vinc_por_cui = vinc.drop_duplicates(subset="cui_limpio", keep="first").set_index("cui_limpio")
 
     for i in df.index:
         cui = df.at[i, "cui_limpio"]
         if cui == "" or cui == ERR: continue
-        if cui not in vinc_por_cui.index: continue
 
-        fila_vinc = vinc_por_cui.loc[cui]
+        cod_local_anexo = str(df.at[i, "cod_local"]).strip() if pd.notna(df.at[i, "cod_local"]) else ""
+        # limpiar .0
+        if cod_local_anexo.endswith(".0"): cod_local_anexo = cod_local_anexo[:-2]
+
+        # primero intento match exacto por CUI + cod_local
+        fila_vinc = None
+        if (cui, cod_local_anexo) in vinc_por_cui_local.index:
+            fila_vinc = vinc_por_cui_local.loc[(cui, cod_local_anexo)]
+        elif cui in vinc_por_cui.index:
+            # si no matchea la combinacion, uso solo CUI (pero aviso)
+            fila_vinc = vinc_por_cui.loc[cui]
+
+        if fila_vinc is None: continue
+
         diffs_fila = []
 
         # nombre_ie
-        nombre_vinc = str(fila_vinc.get("Nombre IIEE", "")).strip()
+        nombre_vinc = str(fila_vinc.get("Nombre IIEE", "")).strip() if hasattr(fila_vinc, "get") else str(fila_vinc["Nombre IIEE"]).strip() if "Nombre IIEE" in fila_vinc.index else ""
         nombre_anexo = str(df.at[i, "nombre_ie"]).strip() if pd.notna(df.at[i, "nombre_ie"]) else ""
         if nombre_vinc and nombre_anexo != nombre_vinc:
             diffs_fila.append(f"nombre_ie difiere (Vinculaciones: '{nombre_vinc}')")
             correcciones.append({"idx": i, "campo": "nombre_ie", "valor": nombre_vinc})
 
-        # cod_local
-        cod_local_vinc = str(fila_vinc.get("Código Local", "")).strip()
-        if cod_local_vinc.endswith(".0"): cod_local_vinc = cod_local_vinc[:-2]
-        cod_local_anexo = str(df.at[i, "cod_local"]).strip() if pd.notna(df.at[i, "cod_local"]) else ""
-        if cod_local_vinc and cod_local_anexo != cod_local_vinc:
-            diffs_fila.append(f"cod_local difiere (Vinculaciones: '{cod_local_vinc}')")
-            correcciones.append({"idx": i, "campo": "cod_local", "valor": cod_local_vinc})
+        # cod_local: solo reporto si esta vacio en el anexo
+        cod_local_v = str(fila_vinc.get("Código Local", "")).strip() if hasattr(fila_vinc, "get") else str(fila_vinc["Código Local"]).strip() if "Código Local" in fila_vinc.index else ""
+        if cod_local_v.endswith(".0"): cod_local_v = cod_local_v[:-2]
+        if cod_local_v and cod_local_anexo == "":
+            diffs_fila.append(f"cod_local vacio (Vinculaciones: '{cod_local_v}')")
+            correcciones.append({"idx": i, "campo": "cod_local", "valor": cod_local_v})
 
         if diffs_fila:
             diferencias.append({"idx": i, "detalle": " | ".join(diffs_fila)})
