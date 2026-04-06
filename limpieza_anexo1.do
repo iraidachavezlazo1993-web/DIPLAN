@@ -285,168 +285,102 @@ save "${rep_cons_t}\anexo1_limpio_pre.dta", replace
 * -------------------------------------------------------------------------
 * 13. VALIDAR CONTRA VINCULACIONES
 * -------------------------------------------------------------------------
-* el archivo se llama Vinculaciones_compartido
 
-local found_vinc = 0
-foreach fname in "Vinculaciones_compartido.xlsx" "Vinculaciones_compartido.csv" ///
-	"Vinculaciones_compartido_03feb206.xlsx" {
-	capture confirm file "${rep_cons_i}\\`fname'"
-	if _rc == 0 {
-		local vinc_file = "`fname'"
-		local found_vinc = 1
-		continue, break
-	}
-}
+di as text ">>> Cargando Vinculaciones_compartido.xlsx"
 
-if `found_vinc' == 1 {
-	di as text ">>> Encontre archivo de vinculaciones: `vinc_file'"
+preserve
+import excel using "${rep_cons_i}\Vinculaciones_compartido.xlsx", sheet("Vinculaciones") firstrow clear
 
-	preserve
-	import excel using "${rep_cons_i}\\`vinc_file'", sheet("Vinculaciones") firstrow clear
+* renombro las columnas que me interesan
+capture rename CUI cui_vinc
+capture rename CódigoLocal cod_local_vinc
+capture rename NombreIIEE nombre_ie_vinc
+capture rename CodigoLocal cod_local_vinc
+capture rename NombreIE nombre_ie_vinc
 
-	* renombro las columnas que me interesan
-	capture rename CUI cui_vinc
-	capture rename CódigoModular cod_mod_vinc
-	capture rename CódigoLocal cod_local_vinc
-	capture rename NombreIIEE nombre_ie_vinc
-	* por si vienen con otros nombres (sin tilde, etc)
-	capture rename CodigoLocal cod_local_vinc
-	capture rename CodigoModular cod_mod_vinc
-	capture rename NombreIE nombre_ie_vinc
-	capture rename CODIGOUNICO cui_vinc
-	capture rename CODIGOLOCAL cod_local_vinc
+* asegurar que CUI sea string limpio
+capture tostring cui_vinc, replace force
+replace cui_vinc = strtrim(cui_vinc)
+replace cui_vinc = regexr(cui_vinc, "\.0+$", "")
 
-	* asegurar que CUI sea string limpio
-	capture tostring cui_vinc, replace force
-	replace cui_vinc = strtrim(cui_vinc)
-	replace cui_vinc = regexr(cui_vinc, "\.0+$", "")
+keep cui_vinc cod_local_vinc nombre_ie_vinc
+rename cui_vinc cui
 
-	* me quedo con lo que necesito
-	keep cui_vinc cod_local_vinc nombre_ie_vinc
-	rename cui_vinc cui
+duplicates drop cui, force
 
-	* puede haber duplicados en la base de vinculaciones
-	duplicates drop cui, force
+tempfile vinculaciones
+save `vinculaciones', replace
+restore
 
-	tempfile vinculaciones
-	save `vinculaciones', replace
-	restore
+merge m:1 cui using `vinculaciones', keep(master match) gen(_merge_vinc)
 
-	* merge
-	merge m:1 cui using `vinculaciones', keep(master match) gen(_merge_vinc)
+gen byte flag_nombre_ie = 0
+gen byte flag_cod_local = 0
 
-	* para los que matchearon, comparo
-	gen byte flag_nombre_ie = 0
-	gen byte flag_cod_local = 0
+replace flag_nombre_ie = 1 if _merge_vinc == 3 & upper(strtrim(nombre_ie)) != upper(strtrim(nombre_ie_vinc)) & nombre_ie_vinc != ""
+replace flag_cod_local = 1 if _merge_vinc == 3 & strtrim(cod_local) != strtrim(cod_local_vinc) & cod_local_vinc != ""
 
-	replace flag_nombre_ie = 1 if _merge_vinc == 3 & upper(strtrim(nombre_ie)) != upper(strtrim(nombre_ie_vinc)) & nombre_ie_vinc != ""
-	replace flag_cod_local = 1 if _merge_vinc == 3 & strtrim(cod_local) != strtrim(cod_local_vinc) & cod_local_vinc != ""
+label var flag_nombre_ie "Nombre IE difiere de vinculaciones"
+label var flag_cod_local "Cod local difiere de vinculaciones"
 
-	label var flag_nombre_ie "Nombre IE difiere de vinculaciones"
-	label var flag_cod_local "Cod local difiere de vinculaciones"
+capture drop nombre_ie_vinc cod_local_vinc _merge_vinc
 
-	* limpio variables del merge
-	capture drop nombre_ie_vinc cod_local_vinc _merge_vinc
-
-	di as result "   Flags de vinculaciones generados"
-}
-else {
-	di as error ">>> No encontre archivo de vinculaciones, me lo salto"
-	di as error "   Busque: Vinculaciones_compartido.xlsx en ${rep_cons_i}"
-	gen byte flag_nombre_ie = 0
-	gen byte flag_cod_local = 0
-}
+di as result "   Flags de vinculaciones generados"
 
 * -------------------------------------------------------------------------
 * 14. VALIDAR CONTRA BASE DE INVERSIONES
 * -------------------------------------------------------------------------
-* la base de inversiones tambien cambia de nombre segun el dia
 
-local found_inv = 0
-foreach fname in "base_inversiones.xlsx" "Base_Inversiones.xlsx" "BASE_INVERSIONES.xlsx" ///
-	"inversiones.xlsx" "Inversiones.xlsx" "base_inv.xlsx" {
-	capture confirm file "${rep_cons_i}\\`fname'"
-	if _rc == 0 {
-		local inv_file = "`fname'"
-		local found_inv = 1
-		continue, break
-	}
+di as text ">>> Cargando Base_inversiones.xlsx"
+
+preserve
+import excel using "${rep_cons_i}\Base_inversiones.xlsx", sheet("Data") firstrow clear
+
+* renombrar columnas a nombres cortos
+capture rename CODIGO_UNICO cui
+capture rename DES_TIPO_FORMATO tipo_inv
+capture rename TIENE_F9 f9_inv
+capture rename NOMBRE_INVERSION nombre_inv
+
+capture tostring cui, replace force
+replace cui = strtrim(cui)
+replace cui = regexr(cui, "\.0+$", "")
+
+* normalizar tipo
+capture confirm variable tipo_inv
+if _rc == 0 {
+	replace tipo_inv = "IOARR" if regexm(upper(tipo_inv), "IOARR")
+	replace tipo_inv = "PI" if regexm(upper(tipo_inv), "PROYECTO") & tipo_inv != "IOARR"
+	replace tipo_inv = "IRI" if regexm(upper(tipo_inv), "IRI") & !inlist(tipo_inv, "IOARR", "PI")
 }
 
-if `found_inv' == 1 {
-	di as text ">>> Encontre base de inversiones: `inv_file'"
+keep cui tipo_inv f9_inv
+duplicates drop cui, force
 
-	preserve
-	import excel using "${rep_cons_i}\\`inv_file'", firstrow clear
+tempfile inversiones
+save `inversiones', replace
+restore
 
-	* auto-detectar nombres de columna
-	capture confirm variable CUI
-	if _rc != 0 {
-		capture confirm variable cui
-		if _rc != 0 {
-			capture confirm variable CODIGOUNICO
-			if _rc == 0 rename CODIGOUNICO CUI
-		}
-		else {
-			rename cui CUI
-		}
-	}
+merge m:1 cui using `inversiones', keep(master match) gen(_merge_inv)
 
-	capture confirm variable TIPO
-	if _rc != 0 {
-		capture confirm variable tipo_inversion
-		if _rc == 0 rename tipo_inversion TIPO
-		capture confirm variable TipoInversion
-		if _rc == 0 rename TipoInversion TIPO
-	}
+gen byte flag_tipo = 0
+gen byte flag_f9 = 0
 
-	capture confirm variable F9
-	if _rc != 0 {
-		capture confirm variable formato9
-		if _rc == 0 rename formato9 F9
-		capture confirm variable Formato9
-		if _rc == 0 rename Formato9 F9
-	}
-
-	rename CUI cui
-	capture rename TIPO tipo_inv
-	capture rename F9 f9_inv
-
-	keep cui tipo_inv f9_inv
-	capture tostring cui, replace force
-	duplicates drop cui, force
-
-	tempfile inversiones
-	save `inversiones', replace
-	restore
-
-	merge m:1 cui using `inversiones', keep(master match) gen(_merge_inv)
-
-	* comparo tipo y f9 con la base maestra
-	gen byte flag_tipo = 0
-	gen byte flag_f9 = 0
-
-	capture confirm variable tipo_inv
-	if _rc == 0 {
-		replace flag_tipo = 1 if _merge_inv == 3 & upper(strtrim(tipo)) != upper(strtrim(tipo_inv)) & tipo_inv != "" & tipo != ""
-		label var flag_tipo "Tipo difiere de base inversiones"
-	}
-
-	capture confirm variable f9_inv
-	if _rc == 0 {
-		replace flag_f9 = 1 if _merge_inv == 3 & upper(strtrim(f9)) != upper(strtrim(f9_inv)) & f9_inv != "" & f9 != ""
-		label var flag_f9 "F9 difiere de base inversiones"
-	}
-
-	capture drop tipo_inv f9_inv _merge_inv
-
-	di as result "   Flags de inversiones generados"
+capture confirm variable tipo_inv
+if _rc == 0 {
+	replace flag_tipo = 1 if _merge_inv == 3 & upper(strtrim(tipo)) != upper(strtrim(tipo_inv)) & tipo_inv != "" & tipo != ""
+	label var flag_tipo "Tipo difiere de base inversiones"
 }
-else {
-	di as error ">>> No encontré base de inversiones, me lo salto"
-	gen byte flag_tipo = 0
-	gen byte flag_f9 = 0
+
+capture confirm variable f9_inv
+if _rc == 0 {
+	replace flag_f9 = 1 if _merge_inv == 3 & upper(strtrim(f9)) != upper(strtrim(f9_inv)) & f9_inv != "" & f9 != ""
+	label var flag_f9 "F9 difiere de base inversiones"
 }
+
+capture drop tipo_inv f9_inv _merge_inv
+
+di as result "   Flags de inversiones generados"
 
 save "${rep_cons_t}\anexo1_limpio_validado.dta", replace
 

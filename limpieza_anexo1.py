@@ -21,17 +21,8 @@ temporal = ruta / "04_temporal"
 # buscar archivos de entrada (a veces cambian de nombre)
 archivo_anexo1 = entrada / "Anexo_1_avance_GR_GL.xlsx"
 
-archivo_vinc = None
-for nombre in ["Vinculaciones_compartido.xlsx", "Vinculaciones_compartido_03feb206.xlsx"]:
-    if (entrada / nombre).exists():
-        archivo_vinc = entrada / nombre
-        break
-
-archivo_inv = None
-for nombre in ["Base_inversiones.xlsx", "2026.03.23_Base de Inversiones.xlsx", "2026.03.23 Base de Inversiones_.xlsx"]:
-    if (entrada / nombre).exists():
-        archivo_inv = entrada / nombre
-        break
+archivo_vinc = entrada / "Vinculaciones_compartido.xlsx"
+archivo_inv = entrada / "Base_inversiones.xlsx"
 
 print("=" * 50)
 print("LIMPIEZA DEL ANEXO 1")
