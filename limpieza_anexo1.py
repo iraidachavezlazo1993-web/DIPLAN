@@ -291,6 +291,9 @@ if vinc is not None:
 
         # completar cod_local si esta vacio
         cod_local_vinc = str(fila_vinc.get("Código Local", "")).strip()
+        # limpiar .0 si viene de float
+        if cod_local_vinc.endswith(".0"):
+            cod_local_vinc = cod_local_vinc[:-2]
         cod_local_anexo = str(df.at[i, "cod_local"]).strip() if pd.notna(df.at[i, "cod_local"]) else ""
         if cod_local_vinc and (cod_local_anexo == "" or pd.isna(df.at[i, "cod_local"])):
             correcciones.append({
