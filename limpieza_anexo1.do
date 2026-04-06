@@ -303,6 +303,12 @@ capture tostring cui_vinc, replace force
 replace cui_vinc = strtrim(cui_vinc)
 replace cui_vinc = regexr(cui_vinc, "\.0+$", "")
 
+* asegurar que cod_local y nombre sean string
+capture tostring cod_local_vinc, replace force
+replace cod_local_vinc = strtrim(cod_local_vinc)
+replace cod_local_vinc = regexr(cod_local_vinc, "\.0+$", "")
+capture tostring nombre_ie_vinc, replace force
+
 keep cui_vinc cod_local_vinc nombre_ie_vinc
 rename cui_vinc cui
 
