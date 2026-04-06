@@ -251,12 +251,13 @@ df["cod_mod"] = df["cod_mod"].apply(lambda x: limpiar_cod_mod(x) if pd.notna(x) 
 print("   Limpieza de campos completada")
 
 # ============================================================================
-# PASO 5: Validar contra bases maestras y corregir
+# PASO 5: Comparar contra bases maestras (sin reemplazar en df)
 # ============================================================================
-print("\n>> Validando contra bases maestras...")
+print("\n>> Comparando contra bases maestras...")
 
-# lista para guardar las correcciones que hago
-correcciones = []
+# guardo las diferencias encontradas y las correcciones para el Anexo_limpio
+diferencias = []   # para Validacion_2
+correcciones = []  # para aplicar en Anexo_limpio
 
 # limpio el CUI del anexo para poder cruzar
 df["cui_limpio"] = df["cui"].apply(
@@ -265,50 +266,38 @@ df["cui_limpio"] = df["cui"].apply(
 
 # --- Cruzar con Vinculaciones ---
 if vinc is not None:
-    # armo un diccionario de CUI -> datos de vinculaciones (tomo el primer registro por CUI)
     vinc_por_cui = vinc.drop_duplicates(subset="cui_limpio", keep="first").set_index("cui_limpio")
 
     for i in df.index:
         cui = df.at[i, "cui_limpio"]
-        if cui == "" or cui == ERR:
-            continue
-        if cui not in vinc_por_cui.index:
-            continue
+        if cui == "" or cui == ERR: continue
+        if cui not in vinc_por_cui.index: continue
 
         fila_vinc = vinc_por_cui.loc[cui]
+        diffs_fila = []
 
-        # corregir nombre_ie si es diferente
+        # nombre_ie
         nombre_vinc = str(fila_vinc.get("Nombre IIEE", "")).strip()
         nombre_anexo = str(df.at[i, "nombre_ie"]).strip() if pd.notna(df.at[i, "nombre_ie"]) else ""
         if nombre_vinc and nombre_anexo != nombre_vinc:
-            correcciones.append({
-                "cui": cui, "campo": "nombre_ie",
-                "valor_original": nombre_anexo,
-                "valor_corregido": nombre_vinc,
-                "fuente": "Vinculaciones"
-            })
-            df.at[i, "nombre_ie"] = nombre_vinc
+            diffs_fila.append(f"nombre_ie difiere (Vinculaciones: '{nombre_vinc}')")
+            correcciones.append({"idx": i, "campo": "nombre_ie", "valor": nombre_vinc})
 
-        # completar cod_local si esta vacio
+        # cod_local
         cod_local_vinc = str(fila_vinc.get("Código Local", "")).strip()
-        # limpiar .0 si viene de float
-        if cod_local_vinc.endswith(".0"):
-            cod_local_vinc = cod_local_vinc[:-2]
+        if cod_local_vinc.endswith(".0"): cod_local_vinc = cod_local_vinc[:-2]
         cod_local_anexo = str(df.at[i, "cod_local"]).strip() if pd.notna(df.at[i, "cod_local"]) else ""
-        if cod_local_vinc and (cod_local_anexo == "" or pd.isna(df.at[i, "cod_local"])):
-            correcciones.append({
-                "cui": cui, "campo": "cod_local",
-                "valor_original": cod_local_anexo,
-                "valor_corregido": cod_local_vinc,
-                "fuente": "Vinculaciones"
-            })
-            df.at[i, "cod_local"] = cod_local_vinc
+        if cod_local_vinc and cod_local_anexo != cod_local_vinc:
+            diffs_fila.append(f"cod_local difiere (Vinculaciones: '{cod_local_vinc}')")
+            correcciones.append({"idx": i, "campo": "cod_local", "valor": cod_local_vinc})
 
-    print(f"   Vinculaciones: {len([c for c in correcciones if c['fuente']=='Vinculaciones'])} correcciones")
+        if diffs_fila:
+            diferencias.append({"idx": i, "detalle": " | ".join(diffs_fila)})
+
+    print(f"   Vinculaciones: {len([d for d in diferencias])} registros con diferencias")
 
 # --- Cruzar con Base de Inversiones ---
 if inv is not None and col_cui_inv:
-    # detectar columnas disponibles
     def buscar_col(df_inv, opciones):
         for c in opciones:
             if c in df_inv.columns: return c
@@ -318,61 +307,66 @@ if inv is not None and col_cui_inv:
     col_monto_inv = buscar_col(inv, ["COSTO_ACTUALIZADO_BI","COSTO_INV_TOTAL_BI"])
     col_f9_inv = buscar_col(inv, ["TIENE_F9","F9"])
     col_nombre_inv = buscar_col(inv, ["NOMBRE_INVERSION","NOMBRE"])
-    col_estado = buscar_col(inv, ["ESTADO"])
-    col_avance_f12b = buscar_col(inv, ["AVANCE_FISICO_F12B"])
 
     inv_por_cui = inv.drop_duplicates(subset="cui_limpio", keep="first").set_index("cui_limpio")
 
-    # agrego columna de nombre de inversion
     df["nombre_inversion"] = ""
+    n_diffs_inv = 0
 
     for i in df.index:
         cui = df.at[i, "cui_limpio"]
-        if cui == "" or cui == ERR:
-            continue
-        if cui not in inv_por_cui.index:
-            continue
+        if cui == "" or cui == ERR: continue
+        if cui not in inv_por_cui.index: continue
 
         fila_inv = inv_por_cui.loc[cui]
+        diffs_fila = []
 
-        # nombre de la inversion (siempre lo agrego)
+        # nombre de la inversion (siempre lo pongo, es informativo)
         if col_nombre_inv:
             nombre = str(fila_inv.get(col_nombre_inv, "")).strip()
             if nombre: df.at[i, "nombre_inversion"] = nombre
 
-        # si tipo esta vacio o con error, intento completar desde inversiones
-        tipo_actual = str(df.at[i, "tipo"]).strip()
-        if tipo_actual in ("", ERR, "nan") and col_tipo:
-            tipo_inv = str(fila_inv.get(col_tipo, "")).strip().upper()
-            tipo_nuevo = ""
-            if "IOARR" in tipo_inv: tipo_nuevo = "IOARR"
-            elif "PROYECTO" in tipo_inv: tipo_nuevo = "PI"
-            elif "IRI" in tipo_inv: tipo_nuevo = "IRI"
-            if tipo_nuevo:
-                correcciones.append({
-                    "cui": cui, "campo": "tipo",
-                    "valor_original": tipo_actual,
-                    "valor_corregido": tipo_nuevo,
-                    "fuente": "Base Inversiones"
-                })
-                df.at[i, "tipo"] = tipo_nuevo
+        # tipo: si el anexo tiene algo diferente a lo que dice inversiones
+        if col_tipo:
+            tipo_inv_raw = str(fila_inv.get(col_tipo, "")).strip().upper()
+            tipo_inv = ""
+            if "IOARR" in tipo_inv_raw: tipo_inv = "IOARR"
+            elif "PROYECTO" in tipo_inv_raw: tipo_inv = "PI"
+            elif "IRI" in tipo_inv_raw: tipo_inv = "IRI"
 
-        # si f9 esta vacio intento completar
-        f9_actual = str(df.at[i, "f9"]).strip()
-        if f9_actual in ("", ERR, "nan") and col_f9_inv:
+            tipo_anexo = str(df.at[i, "tipo"]).strip()
+            if tipo_inv:
+                if tipo_anexo in ("", ERR, "nan"):
+                    diffs_fila.append(f"tipo vacio (Base Inversiones: '{tipo_inv}')")
+                    correcciones.append({"idx": i, "campo": "tipo", "valor": tipo_inv})
+                elif tipo_anexo != tipo_inv:
+                    diffs_fila.append(f"tipo difiere: Anexo='{tipo_anexo}' vs Inversiones='{tipo_inv}'")
+                    correcciones.append({"idx": i, "campo": "tipo", "valor": tipo_inv})
+
+        # f9
+        if col_f9_inv:
             f9_inv = str(fila_inv.get(col_f9_inv, "")).strip().upper()
+            f9_anexo = str(df.at[i, "f9"]).strip()
             if f9_inv in ("SI","NO"):
-                correcciones.append({
-                    "cui": cui, "campo": "f9",
-                    "valor_original": f9_actual,
-                    "valor_corregido": f9_inv,
-                    "fuente": "Base Inversiones"
-                })
-                df.at[i, "f9"] = f9_inv
+                if f9_anexo in ("", ERR, "nan"):
+                    diffs_fila.append(f"f9 vacio (Base Inversiones: '{f9_inv}')")
+                    correcciones.append({"idx": i, "campo": "f9", "valor": f9_inv})
+                elif f9_anexo != f9_inv:
+                    diffs_fila.append(f"f9 difiere: Anexo='{f9_anexo}' vs Inversiones='{f9_inv}'")
+                    correcciones.append({"idx": i, "campo": "f9", "valor": f9_inv})
 
-    print(f"   Base Inversiones: {len([c for c in correcciones if c['fuente']=='Base Inversiones'])} correcciones")
+        if diffs_fila:
+            n_diffs_inv += 1
+            # agrego a diferencias existentes o creo nueva
+            existing = [d for d in diferencias if d["idx"] == i]
+            if existing:
+                existing[0]["detalle"] += " | " + " | ".join(diffs_fila)
+            else:
+                diferencias.append({"idx": i, "detalle": " | ".join(diffs_fila)})
 
-print(f"   Total correcciones: {len(correcciones)}")
+    print(f"   Base Inversiones: {n_diffs_inv} registros con diferencias")
+
+print(f"   Total correcciones para Anexo_limpio: {len(correcciones)}")
 
 # ============================================================================
 # PASO 6: Clasificar comentarios
@@ -432,11 +426,11 @@ def clasificar_comentario(val):
 df["tipo_comentario"] = df["comentarios"].apply(clasificar_comentario)
 
 # ============================================================================
-# PASO 7: Crear campos de validacion unificados
+# PASO 7: Armar los 2 campos de validacion
 # ============================================================================
 print("\n>> Clasificando registros...")
 
-# duplicados de cod_local+cui (un local puede tener varios CUI, eso es valido)
+# duplicados
 dup = df.duplicated(subset=["cod_local","cui"], keep=False) & df["cod_local"].notna()
 df["cod_local_dup"] = ""
 df.loc[dup, "cod_local_dup"] = "SI"
@@ -444,25 +438,20 @@ df.loc[dup, "cod_local_dup"] = "SI"
 # renumerar
 df["nro"] = range(1, len(df) + 1)
 
-# campos que deben estar llenos si o si (menos comentarios, cod_mod, fecha, nro)
 campos_check = ["cui","tipo","monto","avance","f9","comp","unid",
                 "demol","nueva","reforz","cerco","sust","ampl","mobil","agua","elec"]
 campos_requeridos = ["cod_local","region","provincia","distrito","nombre_ie"] + campos_check
 
-# --- validacion_errores: un solo campo con los errores del registro ---
-def armar_validacion_errores(fila):
+# --- Validacion_1: Completo / Incompleto / Error ---
+def armar_validacion_1(fila):
+    # primero chequeo errores
     errores = []
     for c in campos_check:
         if str(fila.get(c, "")) == ERR:
             errores.append(c)
     if errores:
-        return "Error en: " + ", ".join(errores)
-    return ""
-
-df["validacion_errores"] = df.apply(armar_validacion_errores, axis=1)
-
-# --- validacion_completo: que campos le faltan ---
-def armar_validacion_completo(fila):
+        return "Error: " + ", ".join(errores)
+    # despues chequeo campos vacios
     vacios = []
     for c in campos_requeridos:
         val = fila.get(c)
@@ -472,41 +461,30 @@ def armar_validacion_completo(fila):
         return "Incompleto: " + ", ".join(vacios)
     return "Completo"
 
-df["validacion_completo"] = df.apply(armar_validacion_completo, axis=1)
+df["Validacion_1"] = df.apply(armar_validacion_1, axis=1)
 
-# --- validacion_info: diferencias con bases maestras ---
-# ya tengo la lista "correcciones" del paso 5, ahora la uso por CUI
-correcciones_por_cui = {}
-for c in correcciones:
-    cui = c["cui"]
-    if cui not in correcciones_por_cui:
-        correcciones_por_cui[cui] = []
-    correcciones_por_cui[cui].append(f"{c['campo']} ({c['fuente']}): '{c['valor_original']}' -> '{c['valor_corregido']}'")
+# --- Validacion_2: diferencias con bases maestras ---
+diffs_por_idx = {}
+for d in diferencias:
+    diffs_por_idx[d["idx"]] = d["detalle"]
 
-df["validacion_info"] = ""
+df["Validacion_2"] = ""
 for i in df.index:
-    cui = df.at[i, "cui_limpio"]
-    if cui in correcciones_por_cui:
-        df.at[i, "validacion_info"] = " | ".join(correcciones_por_cui[cui])
+    if i in diffs_por_idx:
+        df.at[i, "Validacion_2"] = diffs_por_idx[i]
 
-# ahora si reemplazo los flags por texto legible
+# reemplazo los flags por texto legible
 for c in campos_check:
     df.loc[df[c] == ERR, c] = "<<ERROR>>"
 
-# clasificar en 3 grupos usando los campos de validacion
-tiene_error = df["validacion_errores"] != ""
-esta_completo = df["validacion_completo"] == "Completo"
-
-df["status"] = "LIMPIO"
-df.loc[tiene_error, "status"] = "CON ERRORES"
-df.loc[~esta_completo, "status"] = "EXCLUIDO"
-
-n_limpio = (df["status"] == "LIMPIO").sum()
-n_error = (df["status"] == "CON ERRORES").sum()
-n_excluido = (df["status"] == "EXCLUIDO").sum()
-print(f"   Limpios: {n_limpio}")
+n_completo = (df["Validacion_1"] == "Completo").sum()
+n_incompleto = df["Validacion_1"].str.startswith("Incompleto").sum()
+n_error = df["Validacion_1"].str.startswith("Error").sum()
+n_con_diffs = (df["Validacion_2"] != "").sum()
+print(f"   Completos: {n_completo}")
+print(f"   Incompletos: {n_incompleto}")
 print(f"   Con errores: {n_error}")
-print(f"   Excluidos (incompletos): {n_excluido}")
+print(f"   Con diferencias vs maestras: {n_con_diffs}")
 
 # ============================================================================
 # PASO 8: Armar reportes
@@ -533,20 +511,24 @@ status_region.columns = ["region", "total_locales", "con_info"]
 status_region["pendientes"] = status_region["total_locales"] - status_region["con_info"]
 status_region["pct_avance"] = round(status_region["con_info"] / status_region["total_locales"] * 100, 1)
 
-# agrego el desglose de los que tienen info (limpio/error/excluido)
-desglose = df.groupby("region")["status"].value_counts().unstack(fill_value=0).reset_index()
-for col in ["LIMPIO","CON ERRORES","EXCLUIDO"]:
+# agrego el desglose por tipo de validacion
+df["_status_tmp"] = "Completo"
+df.loc[df["Validacion_1"].str.startswith("Incompleto"), "_status_tmp"] = "Incompleto"
+df.loc[df["Validacion_1"].str.startswith("Error"), "_status_tmp"] = "Con Error"
+desglose = df.groupby("region")["_status_tmp"].value_counts().unstack(fill_value=0).reset_index()
+for col in ["Completo","Incompleto","Con Error"]:
     if col not in desglose.columns:
         desglose[col] = 0
-status_region = status_region.merge(desglose[["region","LIMPIO","CON ERRORES","EXCLUIDO"]], on="region", how="left")
+status_region = status_region.merge(desglose[["region","Completo","Incompleto","Con Error"]], on="region", how="left")
 status_region = status_region.fillna(0)
+df = df.drop(columns=["_status_tmp"])
 
-# --- Errores por campo (cuento desde validacion_errores) ---
+# --- Errores por campo (cuento desde Validacion_1) ---
 resumen_errores = []
 for c in campos_check:
-    n = df["validacion_errores"].str.contains(c, na=False).sum()
+    n = df["Validacion_1"].str.contains(c, na=False).sum()
     if n > 0:
-        resumen_errores.append({"campo": c, "cantidad_errores": n})
+        resumen_errores.append({"campo": c, "cantidad": n})
 df_errores_campo = pd.DataFrame(resumen_errores)
 
 # ============================================================================
@@ -566,10 +548,10 @@ try:
     top10 = status_region.nlargest(10, "total_locales").sort_values("total_locales", ascending=True)
     fig, ax = plt.subplots(figsize=(12, 7))
     y = range(len(top10))
-    ax.barh(y, top10["LIMPIO"], color=verde, label="Limpios")
-    ax.barh(y, top10["CON ERRORES"], left=top10["LIMPIO"], color=amarillo, label="Con errores")
-    ax.barh(y, top10["EXCLUIDO"], left=top10["LIMPIO"]+top10["CON ERRORES"], color=rojo, label="Excluidos")
-    ax.barh(y, top10["pendientes"], left=top10["LIMPIO"]+top10["CON ERRORES"]+top10["EXCLUIDO"], color=gris, label="Pendientes")
+    ax.barh(y, top10["Completo"], color=verde, label="Completos")
+    ax.barh(y, top10["Incompleto"], left=top10["Completo"], color=amarillo, label="Incompletos")
+    ax.barh(y, top10["Con Error"], left=top10["Completo"]+top10["Incompleto"], color=rojo, label="Con Error")
+    ax.barh(y, top10["pendientes"], left=top10["Completo"]+top10["Incompleto"]+top10["Con Error"], color=gris, label="Pendientes")
     ax.set_yticks(y)
     ax.set_yticklabels(top10["region"], fontsize=9)
     ax.set_xlabel("Cantidad de locales educativos")
@@ -603,8 +585,8 @@ try:
     # grafico 3: errores por campo
     if len(df_errores_campo) > 0:
         fig, ax = plt.subplots(figsize=(10, 6))
-        df_errores_campo_sorted = df_errores_campo.sort_values("cantidad_errores", ascending=True)
-        ax.barh(df_errores_campo_sorted["campo"], df_errores_campo_sorted["cantidad_errores"], color=rojo)
+        df_errores_campo_sorted = df_errores_campo.sort_values("cantidad", ascending=True)
+        ax.barh(df_errores_campo_sorted["campo"], df_errores_campo_sorted["cantidad"], color=rojo)
         ax.set_xlabel("Cantidad de errores")
         ax.set_title("Errores por campo", fontsize=13, fontweight="bold")
         plt.tight_layout()
@@ -626,7 +608,7 @@ dicc = pd.DataFrame([
     ("region", "Region"),
     ("provincia", "Provincia"),
     ("distrito", "Distrito"),
-    ("nombre_ie", "Nombre de la IE (corregido desde Vinculaciones si aplica)"),
+    ("nombre_ie", "Nombre de la IE"),
     ("cui", "Codigo Unico de Inversion - solo numeros"),
     ("tipo", "Tipo: PI / IOARR / IRI"),
     ("monto", "Monto de inversion en soles"),
@@ -649,49 +631,51 @@ dicc = pd.DataFrame([
     ("nombre_inversion", "Nombre del proyecto (desde Base Inversiones)"),
     ("tipo_comentario", "Categoria del comentario"),
     ("cod_local_dup", "SI si cod_local+CUI esta duplicado"),
-    ("validacion_errores", "Detalle de campos con error. Ej: 'Error en: comp, monto'. Vacio si no tiene errores"),
-    ("validacion_completo", "'Completo' si todos los campos requeridos estan llenos. Si no: 'Incompleto: campo1, campo2'"),
-    ("validacion_info", "Diferencias encontradas con las bases maestras (Vinculaciones y Base Inversiones). Muestra campo, fuente, valor original y valor corregido"),
+    ("Validacion_1", "'Completo' = todo lleno. 'Incompleto: campo1, campo2' = campos vacios. 'Error: campo1' = valor invalido con <<ERROR>>"),
+    ("Validacion_2", "Diferencias con bases maestras (Vinculaciones_compartido y Base_inversiones). Vacio si no hay diferencias"),
 ], columns=["Campo", "Descripcion"])
 
-# diccionario de errores (para la hoja adicional en base errores)
 dicc_errores = pd.DataFrame([
-    ("<<ERROR>> en cui", "El CUI tiene caracteres no numericos y no se pudo rescatar"),
-    ("<<ERROR>> en tipo", "El tipo de inversion no es PI, IOARR ni IRI"),
-    ("<<ERROR>> en monto", "El monto no es un numero valido o es negativo"),
-    ("<<ERROR>> en avance", "El avance no es un porcentaje valido entre 0 y 100"),
-    ("<<ERROR>> en f9", "El campo F9 no es SI ni NO (puede ser corrimiento de columnas)"),
-    ("<<ERROR>> en comp", "El componente no se pudo clasificar en las 4 categorias validas"),
-    ("<<ERROR>> en unid", "El campo unid no es SI ni NO"),
-    ("<<ERROR>> en cod_mod", "El codigo modular tiene texto que no son codigos numericos"),
-    ("<<ERROR>> en demol/nueva/reforz/cerco/sust/ampl/mobil/agua/elec", "Campos SI/NO con valores invalidos (guiones, letras, numeros raros)"),
+    ("<<ERROR>> en cui", "CUI con caracteres no numericos"),
+    ("<<ERROR>> en tipo", "Tipo no es PI, IOARR ni IRI"),
+    ("<<ERROR>> en monto", "Monto no es numero valido"),
+    ("<<ERROR>> en avance", "Avance fuera de rango 0-100"),
+    ("<<ERROR>> en f9", "F9 no es SI ni NO"),
+    ("<<ERROR>> en comp", "Componente no clasificable"),
+    ("<<ERROR>> en unid", "Unid no es SI ni NO"),
+    ("<<ERROR>> en cod_mod", "Codigo modular con texto invalido"),
+    ("<<ERROR>> en demol a elec", "Campos SI/NO con valores invalidos"),
 ], columns=["Error", "Significado"])
 
-# columnas para exportar (sin las auxiliares internas)
-cols_export = [c for c in df.columns if c not in
-               ("status","cui_limpio")]
+# columnas para exportar
+cols_export = [c for c in df.columns if c not in ("cui_limpio",)]
 
-# base limpia (incluye validacion_completo y validacion_info)
-df_limpia = df[df["status"] == "LIMPIO"][cols_export]
-with pd.ExcelWriter(salida / "Anexo1_base_limpia.xlsx", engine="openpyxl") as w:
-    df_limpia.to_excel(w, index=False, sheet_name="Base Limpia")
-    dicc.to_excel(w, index=False, sheet_name="Diccionario de Datos")
-print(f"   Base limpia: {len(df_limpia)} registros")
-
-# base con errores (validacion_errores dice que campo fallo + hoja de diccionario de errores)
-df_errores = df[df["status"] == "CON ERRORES"][cols_export]
-with pd.ExcelWriter(salida / "Anexo1_base_errores.xlsx", engine="openpyxl") as w:
-    df_errores.to_excel(w, index=False, sheet_name="Registros con Errores")
+# ---- ANEXO_VALIDADO: datos originales del Anexo1 + las 2 validaciones ----
+with pd.ExcelWriter(salida / "Anexo_validado.xlsx", engine="openpyxl") as w:
+    df[cols_export].to_excel(w, index=False, sheet_name="Anexo Validado")
     dicc.to_excel(w, index=False, sheet_name="Diccionario de Datos")
     dicc_errores.to_excel(w, index=False, sheet_name="Diccionario de Errores")
-print(f"   Base errores: {len(df_errores)} registros")
+print(f"   Anexo_validado: {len(df)} registros")
 
-# base excluidos (validacion_completo dice que campos faltan)
-df_excluidos = df[df["status"] == "EXCLUIDO"][cols_export]
-with pd.ExcelWriter(salida / "Anexo1_base_excluidos.xlsx", engine="openpyxl") as w:
-    df_excluidos.to_excel(w, index=False, sheet_name="Excluidos")
+# ---- ANEXO_LIMPIO: con correcciones de las bases maestras aplicadas ----
+df_limpio = df.copy()
+for corr in correcciones:
+    df_limpio.at[corr["idx"], corr["campo"]] = corr["valor"]
+
+# recalculo Validacion_1 del limpio (porque las correcciones pueden completar campos)
+def recalcular_v1(fila):
+    errores = [c for c in campos_check if str(fila.get(c,"")) == "<<ERROR>>"]
+    if errores: return "Error: " + ", ".join(errores)
+    vacios = [c for c in campos_requeridos if pd.isna(fila.get(c)) or str(fila.get(c,"")).strip() in ("","nan")]
+    if vacios: return "Incompleto: " + ", ".join(vacios)
+    return "Completo"
+
+df_limpio["Validacion_1"] = df_limpio.apply(recalcular_v1, axis=1)
+
+with pd.ExcelWriter(salida / "Anexo_limpio.xlsx", engine="openpyxl") as w:
+    df_limpio[cols_export].to_excel(w, index=False, sheet_name="Anexo Limpio")
     dicc.to_excel(w, index=False, sheet_name="Diccionario de Datos")
-print(f"   Base excluidos: {len(df_excluidos)} registros")
+print(f"   Anexo_limpio: {len(df_limpio)} registros ({len(correcciones)} correcciones aplicadas)")
 
 # reporte general
 with pd.ExcelWriter(salida / "Anexo1_reporte.xlsx", engine="openpyxl") as w:
@@ -706,11 +690,12 @@ with pd.ExcelWriter(salida / "Anexo1_reporte.xlsx", engine="openpyxl") as w:
         ("Con CUI registrado", total_con_cui),
         ("Pendientes (sin CUI)", len(df_total) - total_con_cui),
         ("", ""),
-        ("Registros limpios", n_limpio),
-        ("Registros con errores", n_error),
-        ("Registros excluidos", n_excluido),
+        ("Completos", n_completo),
+        ("Incompletos", n_incompleto),
+        ("Con errores", n_error),
         ("", ""),
-        ("Correcciones realizadas", len(correcciones)),
+        ("Con diferencias vs maestras", n_con_diffs),
+        ("Correcciones en Anexo_limpio", len(correcciones)),
     ], columns=["Concepto", "Cantidad"])
     resumen.to_excel(w, index=False, sheet_name="Resumen")
 print("   Reporte generado")
@@ -723,8 +708,9 @@ print("RESUMEN")
 print("=" * 50)
 print(f"Total locales: {len(df_total):,}")
 print(f"Con CUI: {total_con_cui:,} ({round(total_con_cui/len(df_total)*100,1)}%)")
-print(f"  - Limpios: {n_limpio}")
+print(f"  - Completos: {n_completo}")
+print(f"  - Incompletos: {n_incompleto}")
 print(f"  - Con errores: {n_error}")
-print(f"  - Excluidos: {n_excluido}")
-print(f"Correcciones desde maestras: {len(correcciones)}")
+print(f"  - Diferencias vs maestras: {n_con_diffs}")
+print(f"Correcciones en Anexo_limpio: {len(correcciones)}")
 print(f"\nArchivos en: {salida}")
