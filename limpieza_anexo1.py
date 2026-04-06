@@ -432,7 +432,7 @@ def clasificar_comentario(val):
 df["tipo_comentario"] = df["comentarios"].apply(clasificar_comentario)
 
 # ============================================================================
-# PASO 7: Marcar duplicados, renumerar, detectar errores y excluidos
+# PASO 7: Crear campos de validacion unificados
 # ============================================================================
 print("\n>> Clasificando registros...")
 
@@ -449,37 +449,57 @@ campos_check = ["cui","tipo","monto","avance","f9","comp","unid",
                 "demol","nueva","reforz","cerco","sust","ampl","mobil","agua","elec"]
 campos_requeridos = ["cod_local","region","provincia","distrito","nombre_ie"] + campos_check
 
-# marcar errores por campo
-for c in campos_check:
-    df["err_" + c] = (df[c] == ERR).astype(int)
+# --- validacion_errores: un solo campo con los errores del registro ---
+def armar_validacion_errores(fila):
+    errores = []
+    for c in campos_check:
+        if str(fila.get(c, "")) == ERR:
+            errores.append(c)
+    if errores:
+        return "Error en: " + ", ".join(errores)
+    return ""
 
-# tiene algun error?
-cols_err = [f"err_{c}" for c in campos_check]
-df["tiene_error"] = df[cols_err].max(axis=1)
+df["validacion_errores"] = df.apply(armar_validacion_errores, axis=1)
 
-# campos vacios (requeridos que quedaron sin llenar despues de correcciones)
-def campos_incompletos(fila):
+# --- validacion_completo: que campos le faltan ---
+def armar_validacion_completo(fila):
     vacios = []
     for c in campos_requeridos:
         val = fila.get(c)
         if pd.isna(val) or str(val).strip() == "" or str(val).strip() == "nan":
             vacios.append(c)
-    return vacios
+    if vacios:
+        return "Incompleto: " + ", ".join(vacios)
+    return "Completo"
 
-df["campos_faltantes"] = df.apply(lambda f: ", ".join(campos_incompletos(f)), axis=1)
-df["esta_completo"] = df["campos_faltantes"].apply(lambda x: x == "")
+df["validacion_completo"] = df.apply(armar_validacion_completo, axis=1)
 
-# clasificar en 3 grupos
-# limpio = sin errores Y completo
-# con errores = tiene algun campo con error pero tiene datos
-# excluido = le faltan campos requeridos
-df["status"] = "LIMPIO"
-df.loc[df["tiene_error"] == 1, "status"] = "CON ERRORES"
-df.loc[~df["esta_completo"], "status"] = "EXCLUIDO"
+# --- validacion_info: diferencias con bases maestras ---
+# ya tengo la lista "correcciones" del paso 5, ahora la uso por CUI
+correcciones_por_cui = {}
+for c in correcciones:
+    cui = c["cui"]
+    if cui not in correcciones_por_cui:
+        correcciones_por_cui[cui] = []
+    correcciones_por_cui[cui].append(f"{c['campo']} ({c['fuente']}): '{c['valor_original']}' -> '{c['valor_corregido']}'")
 
-# reemplazar el flag por texto legible en los que tienen error
+df["validacion_info"] = ""
+for i in df.index:
+    cui = df.at[i, "cui_limpio"]
+    if cui in correcciones_por_cui:
+        df.at[i, "validacion_info"] = " | ".join(correcciones_por_cui[cui])
+
+# ahora si reemplazo los flags por texto legible
 for c in campos_check:
     df.loc[df[c] == ERR, c] = "<<ERROR>>"
+
+# clasificar en 3 grupos usando los campos de validacion
+tiene_error = df["validacion_errores"] != ""
+esta_completo = df["validacion_completo"] == "Completo"
+
+df["status"] = "LIMPIO"
+df.loc[tiene_error, "status"] = "CON ERRORES"
+df.loc[~esta_completo, "status"] = "EXCLUIDO"
 
 n_limpio = (df["status"] == "LIMPIO").sum()
 n_error = (df["status"] == "CON ERRORES").sum()
@@ -521,10 +541,10 @@ for col in ["LIMPIO","CON ERRORES","EXCLUIDO"]:
 status_region = status_region.merge(desglose[["region","LIMPIO","CON ERRORES","EXCLUIDO"]], on="region", how="left")
 status_region = status_region.fillna(0)
 
-# --- Errores por campo ---
+# --- Errores por campo (cuento desde validacion_errores) ---
 resumen_errores = []
 for c in campos_check:
-    n = (df["err_" + c] == 1).sum()
+    n = df["validacion_errores"].str.contains(c, na=False).sum()
     if n > 0:
         resumen_errores.append({"campo": c, "cantidad_errores": n})
 df_errores_campo = pd.DataFrame(resumen_errores)
@@ -629,30 +649,47 @@ dicc = pd.DataFrame([
     ("nombre_inversion", "Nombre del proyecto (desde Base Inversiones)"),
     ("tipo_comentario", "Categoria del comentario"),
     ("cod_local_dup", "SI si cod_local+CUI esta duplicado"),
+    ("validacion_errores", "Detalle de campos con error. Ej: 'Error en: comp, monto'. Vacio si no tiene errores"),
+    ("validacion_completo", "'Completo' si todos los campos requeridos estan llenos. Si no: 'Incompleto: campo1, campo2'"),
+    ("validacion_info", "Diferencias encontradas con las bases maestras (Vinculaciones y Base Inversiones). Muestra campo, fuente, valor original y valor corregido"),
 ], columns=["Campo", "Descripcion"])
 
-# columnas para exportar (sin las auxiliares)
-cols_export = [c for c in df.columns if not c.startswith("err_") and c not in
-               ("tiene_error","campos_faltantes","esta_completo","status","cui_limpio")]
+# diccionario de errores (para la hoja adicional en base errores)
+dicc_errores = pd.DataFrame([
+    ("<<ERROR>> en cui", "El CUI tiene caracteres no numericos y no se pudo rescatar"),
+    ("<<ERROR>> en tipo", "El tipo de inversion no es PI, IOARR ni IRI"),
+    ("<<ERROR>> en monto", "El monto no es un numero valido o es negativo"),
+    ("<<ERROR>> en avance", "El avance no es un porcentaje valido entre 0 y 100"),
+    ("<<ERROR>> en f9", "El campo F9 no es SI ni NO (puede ser corrimiento de columnas)"),
+    ("<<ERROR>> en comp", "El componente no se pudo clasificar en las 4 categorias validas"),
+    ("<<ERROR>> en unid", "El campo unid no es SI ni NO"),
+    ("<<ERROR>> en cod_mod", "El codigo modular tiene texto que no son codigos numericos"),
+    ("<<ERROR>> en demol/nueva/reforz/cerco/sust/ampl/mobil/agua/elec", "Campos SI/NO con valores invalidos (guiones, letras, numeros raros)"),
+], columns=["Error", "Significado"])
 
-# base limpia
+# columnas para exportar (sin las auxiliares internas)
+cols_export = [c for c in df.columns if c not in
+               ("status","cui_limpio")]
+
+# base limpia (incluye validacion_completo y validacion_info)
 df_limpia = df[df["status"] == "LIMPIO"][cols_export]
 with pd.ExcelWriter(salida / "Anexo1_base_limpia.xlsx", engine="openpyxl") as w:
     df_limpia.to_excel(w, index=False, sheet_name="Base Limpia")
     dicc.to_excel(w, index=False, sheet_name="Diccionario de Datos")
 print(f"   Base limpia: {len(df_limpia)} registros")
 
-# base con errores
-df_errores = df[df["status"] == "CON ERRORES"].copy()
+# base con errores (validacion_errores dice que campo fallo + hoja de diccionario de errores)
+df_errores = df[df["status"] == "CON ERRORES"][cols_export]
 with pd.ExcelWriter(salida / "Anexo1_base_errores.xlsx", engine="openpyxl") as w:
-    df_errores[cols_export + [f"err_{c}" for c in campos_check]].to_excel(w, index=False, sheet_name="Registros con Errores")
+    df_errores.to_excel(w, index=False, sheet_name="Registros con Errores")
     dicc.to_excel(w, index=False, sheet_name="Diccionario de Datos")
+    dicc_errores.to_excel(w, index=False, sheet_name="Diccionario de Errores")
 print(f"   Base errores: {len(df_errores)} registros")
 
-# base excluidos
-df_excluidos = df[df["status"] == "EXCLUIDO"].copy()
+# base excluidos (validacion_completo dice que campos faltan)
+df_excluidos = df[df["status"] == "EXCLUIDO"][cols_export]
 with pd.ExcelWriter(salida / "Anexo1_base_excluidos.xlsx", engine="openpyxl") as w:
-    df_excluidos[cols_export + ["campos_faltantes"]].to_excel(w, index=False, sheet_name="Excluidos")
+    df_excluidos.to_excel(w, index=False, sheet_name="Excluidos")
     dicc.to_excel(w, index=False, sheet_name="Diccionario de Datos")
 print(f"   Base excluidos: {len(df_excluidos)} registros")
 
