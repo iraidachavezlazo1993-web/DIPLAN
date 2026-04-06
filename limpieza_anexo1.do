@@ -320,11 +320,17 @@ restore
 
 merge m:1 cui using `vinculaciones', keep(master match) gen(_merge_vinc)
 
+* despues del merge, cod_local_vinc puede ser numerico y cod_local string
+* o viceversa, asi que convierto ambos a string para comparar
+capture tostring cod_local_vinc, replace force
+capture tostring cod_local, replace force
+capture tostring nombre_ie_vinc, replace force
+
 gen byte flag_nombre_ie = 0
 gen byte flag_cod_local = 0
 
-replace flag_nombre_ie = 1 if _merge_vinc == 3 & upper(strtrim(nombre_ie)) != upper(strtrim(nombre_ie_vinc)) & nombre_ie_vinc != ""
-replace flag_cod_local = 1 if _merge_vinc == 3 & strtrim(cod_local) != strtrim(cod_local_vinc) & cod_local_vinc != ""
+replace flag_nombre_ie = 1 if _merge_vinc == 3 & upper(strtrim(nombre_ie)) != upper(strtrim(nombre_ie_vinc)) & !missing(nombre_ie_vinc) & nombre_ie_vinc != "" & nombre_ie_vinc != "."
+replace flag_cod_local = 1 if _merge_vinc == 3 & strtrim(cod_local) != strtrim(cod_local_vinc) & !missing(cod_local_vinc) & cod_local_vinc != "" & cod_local_vinc != "."
 
 label var flag_nombre_ie "Nombre IE difiere de vinculaciones"
 label var flag_cod_local "Cod local difiere de vinculaciones"
