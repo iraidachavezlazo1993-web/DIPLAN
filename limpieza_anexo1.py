@@ -10,10 +10,16 @@ import re
 from pathlib import Path
 
 # ── 0. RUTAS ──────────────────────────────────────────────────────────────────
-ruta = Path(r"C:\Users\diplan11\Documents\00_MINEDU\TRABAJO-MINEDU\SOL_GR_GL")
-entrada = ruta / "01_input"
-salida  = ruta / "03_output"
-temporal = ruta / "04_temporal"
+import platform
+if platform.system() == "Windows":
+    ruta = Path(r"C:\Users\diplan11\Documents\00_MINEDU\TRABAJO-MINEDU\SOL_GR_GL")
+    entrada = ruta / "01_input"
+    salida  = ruta / "03_output"
+    temporal = ruta / "04_temporal"
+else:
+    entrada = Path(__file__).resolve().parent
+    salida  = entrada
+    temporal = entrada
 
 INPUT = entrada / "Anexo_1_avance_GR_GL.xlsx"
 INPUT_INV = entrada / "2026.03.23 Base de Inversiones_.xlsx"
@@ -78,7 +84,19 @@ for field in CAMPOS_GR_GL:
 
 # ── 5. FUNCIONES DE NORMALIZACIÓN ────────────────────────────────────────────
 
+def norm_cod_local(v):
+    """Código local: 6 dígitos, pad con ceros a la izquierda. Letras = missing."""
+    if pd.isna(v) or str(v).strip() == "":
+        return v
+    s = re.sub(r"\.0+$", "", str(v).strip())
+    s = re.sub(r"\s+", "", s)
+    if not re.match(r"^\d+$", s):
+        return None
+    return s.zfill(6)
+
+
 def norm_cui(v):
+    """CUI: solo números. Intenta rescatar secuencia de 5+ dígitos."""
     if pd.isna(v):
         return v
     s = str(v).strip()
@@ -87,6 +105,36 @@ def norm_cui(v):
         return s
     m = re.search(r"\d{5,}", s)
     return m.group() if m else ERROR_FLAG
+
+
+def norm_cod_mod(v):
+    """Código modular: 7 dígitos cada uno, separados por /.
+    Múltiples códigos se unifican con /. Letras = missing."""
+    if pd.isna(v) or str(v).strip() == "":
+        return v
+    s = str(v).strip()
+    if s in {"-", "_", "--", "---", "-----------------------"}:
+        return None
+    s_upper = s.upper()
+    if s_upper in {"SI", "SÍ", "NO", "NINGUNA", "0"}:
+        return None
+    if re.search(r"[a-zA-Z]", s):
+        return None
+    s = s.replace("/", ",").replace(" - ", ",")
+    s = s.replace("\n", ",").replace("\r", ",")
+    s = re.sub(r"\s+", "", s)
+    s = re.sub(r",+", ",", s)
+    s = s.strip(",")
+    if not re.match(r"^[\d,]+$", s):
+        return None
+    codigos = []
+    for cod in s.split(","):
+        cod = cod.strip()
+        if cod:
+            cod = re.sub(r"\.0+$", "", cod)
+            cod = cod.zfill(7)
+            codigos.append(cod)
+    return "/".join(codigos) if codigos else None
 
 
 def norm_tipo(v):
@@ -252,7 +300,9 @@ print("\n>> Limpiando campos...")
 
 SINO_VARS = ["demol", "nueva", "reforz", "cerco", "sust", "ampl", "mobil", "agua", "elec", "unid"]
 
+df["cod_local"] = df["cod_local"].apply(norm_cod_local)
 df["cui"] = df["cui"].apply(norm_cui)
+df["cod_mod"] = df["cod_mod"].apply(norm_cod_mod)
 df["tipo"] = df["tipo"].apply(norm_tipo)
 df["monto"] = df["monto"].apply(norm_monto)
 df["avance"] = df["avance"].apply(norm_avance)
