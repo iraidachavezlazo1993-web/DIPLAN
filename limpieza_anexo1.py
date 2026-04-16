@@ -23,6 +23,7 @@ else:
 
 INPUT = entrada / "Anexo_1_avance_GR_GL.xlsx"
 INPUT_INV = entrada / "2026.04.13 Base de Inversiones.xlsx"
+INPUT_MEF = entrada / "Rep_Inversiones_13ABR2026_MEFCOMPLETA.xlsx"
 INPUT_VINC = entrada / "2026.04.14 Vinculaciones.xlsx"
 OUT_CLEAN = salida / "Anexo1_base_limpia.xlsx"
 OUT_ERRORS = salida / "Anexo1_base_errores.xlsx"
@@ -388,7 +389,29 @@ if INPUT_INV.exists():
         print(f"   Error: {e}")
         inv_dict = None
 else:
-    print("\n>> Base de Inversiones no encontrada")
+    print("\n>> Base de Inversiones MINEDU no encontrada")
+
+# ── 8.1b Cargar Base MEF Completa (respaldo para CUI no en Banco MINEDU) ────
+mef_dict = None
+if INPUT_MEF.exists():
+    print(f"\n>> Cargando Base MEF Completa: {INPUT_MEF.name}")
+    try:
+        mef = pd.read_excel(INPUT_MEF, sheet_name="INVERSIONES", header=0, dtype=str)
+        if "CODIGO_UNICO" not in mef.columns:
+            raise ValueError("No se encontró la columna CODIGO_UNICO")
+
+        mef["cui_limpio"] = mef["CODIGO_UNICO"].apply(
+            lambda x: re.sub(r"\.0+$", "", str(x).strip()).zfill(7) if pd.notna(x) else ""
+        )
+        mef_dedup = mef.drop_duplicates(subset=["cui_limpio"], keep="first")
+        mef_dict = mef_dedup.set_index("cui_limpio")
+        print(f"   {len(mef_dict):,} CUIs únicos en Base MEF")
+        print(f"   Funciones: {mef['FUNCION'].value_counts().to_dict()}")
+    except Exception as e:
+        print(f"   Error: {e}")
+        mef_dict = None
+else:
+    print("\n>> Base MEF Completa no encontrada")
 
 # ── 8.2 Cargar Vinculaciones (cod_local y cod_mod por CUI) ──────────────────
 vinc_por_cui = None
@@ -530,6 +553,116 @@ if inv_dict is not None:
     print(f"   Campos completados (faltaban en Anexo): {n_completados}")
 else:
     df["cui_en_banco"] = "NO VERIFICADO"
+
+# ── 8.3b CRUZAR CON BASE MEF (respaldo para los que no están en Banco MINEDU)
+def tipo_mef_a_anexo(v):
+    if pd.isna(v) or str(v).strip() == "":
+        return None
+    s = str(v).strip().upper()
+    if "IRI" in s:
+        return "IRI"
+    if "IOARR" in s or "FUR" in s:
+        return "IOARR"
+    if "PIP" in s or "PROYECTO" in s or "PI" == s:
+        return "PI"
+    return None
+
+CAMPOS_EXTRA_MEF = {
+    "mef_estado":       "ESTADO",
+    "mef_situacion":    "SITUACION",
+    "mef_funcion":      "FUNCION",
+    "mef_programa":     "PROGRAMA",
+    "mef_nombre_inv":   "NOMBRE_INVERSION",
+    "mef_departamento": "DEPARTAMENTO",
+    "mef_provincia":    "PROVINCIA",
+    "mef_distrito":     "DISTRITO",
+    "mef_tiene_f8":     "TIENE_F8",
+    "mef_culminada":    "CULMINADA",
+    "mef_monto_viable": "MONTO_VIABLE",
+}
+
+if mef_dict is not None:
+    print(f"\n>> Cruzando con Base MEF (respaldo)...")
+    set_mef = set(mef_dict.index)
+
+    df["cui_en_mef"] = df["cui"].apply(
+        lambda x: "SI" if str(x).split("/")[0] in set_mef else "NO"
+    )
+    n_en_mef = (df["cui_en_mef"] == "SI").sum()
+    n_solo_mef = ((df["cui_en_mef"] == "SI") & (df["cui_en_banco"] != "SI")).sum()
+    print(f"   CUI encontrados en MEF: {n_en_mef}")
+    print(f"   CUI SOLO en MEF (no en Banco MINEDU): {n_solo_mef}")
+
+    n_comp_mef = 0
+    for idx, row in df.iterrows():
+        cui_val = str(row["cui"]).split("/")[0]
+        if cui_val not in set_mef:
+            continue
+        # solo complementar si NO se encontró en Banco MINEDU
+        if row.get("cui_en_banco") == "SI":
+            continue
+
+        mef_row = mef_dict.loc[cui_val]
+
+        # tipo: completar si falta o tiene error
+        if pd.isna(row["tipo"]) or row["tipo"] == "" or row["tipo"] == ERROR_FLAG:
+            mef_tipo = tipo_mef_a_anexo(mef_row.get("TIPO_INVERSION"))
+            if mef_tipo:
+                df.at[idx, "tipo"] = mef_tipo
+                df.at[idx, "err_tipo"] = 0
+                n_comp_mef += 1
+
+        # monto: completar si falta
+        if pd.isna(row["monto"]) or row["monto"] == "" or row["monto"] == ERROR_FLAG:
+            mef_monto = mef_row.get("COSTO_ACTUALIZADO")
+            if pd.isna(mef_monto) or str(mef_monto).strip() == "":
+                mef_monto = mef_row.get("MONTO_VIABLE")
+            if pd.notna(mef_monto) and str(mef_monto).strip() != "":
+                try:
+                    df.at[idx, "monto"] = str(round(float(str(mef_monto).strip()), 2))
+                    df.at[idx, "err_monto"] = 0
+                    n_comp_mef += 1
+                except ValueError:
+                    pass
+
+        # f9: completar si falta
+        if pd.isna(row["f9"]) or row["f9"] == "" or row["f9"] == ERROR_FLAG:
+            mef_f9 = mef_row.get("TIENE_F9")
+            if pd.notna(mef_f9) and str(mef_f9).strip().upper() in {"SI", "NO", "SÍ"}:
+                df.at[idx, "f9"] = "SI" if str(mef_f9).strip().upper() in {"SI", "SÍ"} else "NO"
+                df.at[idx, "err_f9"] = 0
+                n_comp_mef += 1
+
+        # avance: completar si falta
+        if pd.isna(row["avance"]) or row["avance"] == "" or row["avance"] == ERROR_FLAG:
+            mef_av = mef_row.get("AVANCE_FISICO")
+            if pd.isna(mef_av) or str(mef_av).strip() == "":
+                mef_av = mef_row.get("AVANCE_EJECUCION")
+            if pd.notna(mef_av) and str(mef_av).strip() != "":
+                try:
+                    av = float(str(mef_av).strip())
+                    if 0 <= av <= 1:
+                        av = round(av * 100, 2)
+                    df.at[idx, "avance"] = str(round(av, 2))
+                    df.at[idx, "err_avance"] = 0
+                    n_comp_mef += 1
+                except ValueError:
+                    pass
+
+        # campos extra MEF (enriquecer)
+        for col_nueva, col_mef in CAMPOS_EXTRA_MEF.items():
+            val = mef_row.get(col_mef)
+            if pd.notna(val) and str(val).strip() != "":
+                df.at[idx, col_nueva] = str(val).strip()
+
+    # recalcular errores
+    for v in CHECK_VARS:
+        df[f"err_{v}"] = df[v].apply(lambda x: 1 if str(x) == ERROR_FLAG else 0)
+    df["tiene_error"] = df[[f"err_{v}" for v in CHECK_VARS]].max(axis=1)
+
+    print(f"   Campos completados desde MEF: {n_comp_mef}")
+else:
+    df["cui_en_mef"] = "NO VERIFICADO"
 
 # ── 8.4 CRUZAR CON VINCULACIONES (cod_local y cod_mod oficiales) ────────────
 if vinc_por_cui is not None:
@@ -692,6 +825,13 @@ DICCIONARIO = [
     {"variable": "banco_avance_f12b", "descripcion": "Avance físico F12B (del Banco)", "tipo": "numérico", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
     {"variable": "banco_monto_actualizado", "descripcion": "Costo actualizado (del Banco)", "tipo": "numérico", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
     {"variable": "banco_nombre_inv", "descripcion": "Nombre de la inversión (del Banco)", "tipo": "texto", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
+    {"variable": "cui_en_mef", "descripcion": "¿El CUI existe en Base MEF Completa?", "tipo": "texto", "regla_limpieza": "SI / NO. Respaldo para CUI que no están en Banco MINEDU"},
+    {"variable": "mef_estado", "descripcion": "Estado de la inversión (Base MEF)", "tipo": "texto", "regla_limpieza": "Solo si no está en Banco MINEDU"},
+    {"variable": "mef_situacion", "descripcion": "Situación de la inversión (Base MEF)", "tipo": "texto", "regla_limpieza": "Solo si no está en Banco MINEDU"},
+    {"variable": "mef_funcion", "descripcion": "Función (cadena funcional, Base MEF)", "tipo": "texto", "regla_limpieza": "Permite identificar CUI con otra cadena funcional (no Educación)"},
+    {"variable": "mef_programa", "descripcion": "Programa (cadena funcional, Base MEF)", "tipo": "texto", "regla_limpieza": "Solo si no está en Banco MINEDU"},
+    {"variable": "mef_nombre_inv", "descripcion": "Nombre de la inversión (Base MEF)", "tipo": "texto", "regla_limpieza": "Solo si no está en Banco MINEDU"},
+    {"variable": "mef_monto_viable", "descripcion": "Monto viable (Base MEF)", "tipo": "numérico", "regla_limpieza": "Solo si no está en Banco MINEDU"},
     {"variable": "cui_en_vinc", "descripcion": "¿El CUI existe en Vinculaciones MEF?", "tipo": "texto", "regla_limpieza": "SI / NO"},
     {"variable": "cod_local_oficial", "descripcion": "Códigos locales oficiales desde Vinculaciones", "tipo": "texto (sep /)", "regla_limpieza": "Lista desde Vinculaciones MEF para ese CUI"},
     {"variable": "cod_mod_oficial", "descripcion": "Códigos modulares oficiales desde Vinculaciones", "tipo": "texto (sep /)", "regla_limpieza": "Lista desde Vinculaciones MEF para ese CUI"},
