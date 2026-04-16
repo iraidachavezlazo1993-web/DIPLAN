@@ -276,21 +276,84 @@ def norm_sino(v):
     return ERROR_FLAG
 
 
+MESES_ES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "setiembre": 9, "septiembre": 9, "octubre": 10,
+    "noviembre": 11, "diciembre": 12,
+    "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
+    "jul": 7, "ago": 8, "set": 9, "sep": 9, "oct": 10, "nov": 11, "dic": 12,
+}
+
 def norm_fecha(v):
     if pd.isna(v) or str(v).strip() == "":
-        return v
+        return None
     s = str(v).strip()
+    # eliminar valores no-fecha
+    s_up = s.upper()
+    if s_up in {"N/D", "-", "--", "---", "NO", "SI", "SÍ", "NO CULMINADO",
+                "EN EJECUCION", "EN EJECUCIÓN", "SUSPENDIDA", "NO REGISTRA",
+                "SIN DEFINIR", "PROYECTO VIABLE", "EN PROCESO DE RECEPCIÓN",
+                "NO CUENTA CON EJECUCION FISICA", "PROYECTO CON EXPEDIENTE TECNICO"}:
+        return None
+    # eliminar 00/01/1900 y similares
+    if "1900" in s:
+        return None
+    # formato ISO: 2022-08-31 00:00:00
     if re.match(r"^\d{4}-\d{2}-\d{2}", s):
         try:
             dt = pd.to_datetime(s)
+            if dt.year < 1950:
+                return None
+            return dt.strftime("%d/%m/%Y")
+        except Exception:
+            return None
+    # formato dd/mm/yyyy
+    if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", s):
+        try:
+            dt = pd.to_datetime(s, dayfirst=True)
+            if dt.year < 1950:
+                return None
             return dt.strftime("%d/%m/%Y")
         except Exception:
             return s
-    if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", s):
-        return s
+    # formato dd-mm-yyyy
     if re.match(r"^\d{1,2}-\d{1,2}-\d{4}$", s):
-        return s.replace("-", "/")
-    return s
+        try:
+            dt = pd.to_datetime(s.replace("-", "/"), dayfirst=True)
+            if dt.year < 1950:
+                return None
+            return dt.strftime("%d/%m/%Y")
+        except Exception:
+            return None
+    # "31 DE ENERO DE 2024", "FEBRERO DEL 2025", "Setiembre 2023", etc.
+    s_lower = s.lower()
+    for mes_name, mes_num in MESES_ES.items():
+        if mes_name in s_lower:
+            anio_m = re.search(r"\d{4}", s)
+            dia_m = re.search(r"\b(\d{1,2})\b", s)
+            if anio_m:
+                anio = int(anio_m.group())
+                dia = int(dia_m.group(1)) if dia_m and int(dia_m.group(1)) <= 31 else 1
+                try:
+                    dt = pd.Timestamp(year=anio, month=mes_num, day=dia)
+                    return dt.strftime("%d/%m/%Y")
+                except Exception:
+                    return None
+            break
+    # "Set-26" -> Sep 2026 (formato Excel)
+    m = re.match(r"^([A-Za-z]{3})-(\d{2})$", s)
+    if m:
+        mes_abbr = m.group(1).lower()
+        anio_2d = int(m.group(2))
+        anio = 2000 + anio_2d if anio_2d < 50 else 1900 + anio_2d
+        if mes_abbr in MESES_ES:
+            try:
+                dt = pd.Timestamp(year=anio, month=MESES_ES[mes_abbr], day=1)
+                return dt.strftime("%d/%m/%Y")
+            except Exception:
+                return None
+    # "JUNIO" sin año -> no se puede interpretar
+    return None
 
 
 def limpiar_comentarios(v):
@@ -299,6 +362,40 @@ def limpiar_comentarios(v):
     s = str(v).strip()
     s = re.sub(r"\s+", " ", s)
     return s if s else None
+
+
+CATEGORIAS_COMENTARIOS = [
+    ("OBRA CULMINADA", [r"CULMINA", r"FINALIZA", r"CONCLUIDO", r"TERMINAD", r"EJECUTAD[OA] AL 100", r"100\s*%", r"RECEPCIONAD"]),
+    ("EN EJECUCIÓN", [r"EN EJECUC", r"EJECUCION FISICA", r"EJECUTANDO", r"EN PROCESO DE CONSTRUC", r"EN CONSTRUCCION"]),
+    ("EN PROCESO DE LIQUIDACIÓN", [r"LIQUIDACI[OÓ]N", r"LIQUIDADO", r"LIQUIDAR", r"LUQUIDADO"]),
+    ("OBRA PARALIZADA/SUSPENDIDA", [r"PARALIZ", r"SUSPENDID", r"INCONCLUS"]),
+    ("EN PROCESO DE CIERRE", [r"CIERRE", r"CERRAD[OA]", r"FORMATO 9", r"FORMATO 09", r"F9", r"F01"]),
+    ("CON EXPEDIENTE TÉCNICO", [r"EXPEDIENTE T[EÉ]CNICO", r"EXP\.?\s*T[EÉ]C", r"\bE\.?T\.?\b.*APROBAD"]),
+    ("EN ELABORACIÓN DE ET", [r"ELABORACI[OÓ]N.*E\.?T", r"ELABORACION DEL EXPEDIENTE", r"FORMULACI[OÓ]N.*E\.?T", r"EN ELABORACION DE E"]),
+    ("SIN EXPEDIENTE TÉCNICO", [r"NO TIENE EXPEDIENTE", r"NO TIENE FICHA", r"SIN EXP"]),
+    ("PENDIENTE DE FINANCIAMIENTO", [r"FINANCIAMIENTO", r"SIN PRESUPUESTO", r"FALTA FINANC", r"LIMITACIONES PRESUPUEST", r"RECURSO"]),
+    ("TRANSFERIDO/RECEPTADO", [r"TRANSFERI", r"RECEPTADO", r"TRANSFERENCIA"]),
+    ("NO TIENE AVANCE FÍSICO", [r"NO TIENE AVANCE FISICO", r"NO PRESENTA.*AVANCE FISICO", r"NO CUENTA CON AVANCE FISICO", r"SIN AVANCE"]),
+    ("SOLO AVANCE FINANCIERO", [r"AVANCE FINANCIERO", r"AVANCE FIANANCIERO", r"EJECUCI[OÓ]N FINANCIER"]),
+    ("NO CUENTA CON INTERVENCIÓN", [r"NO CUENTA CON INTERVEN", r"NO EJECUT[OÓ]", r"SIN EJECUCI[OÓ]N", r"NO EJECUTADO", r"SIN INICIO"]),
+    ("VIABLE/EN PROGRAMACIÓN", [r"VIABLE", r"PROGRAMACI[OÓ]N", r"PMI", r"FICHA T[EÉ]CNICA"]),
+    ("CERCO PERIMÉTRICO", [r"CERCO PERIM[EÉ]TRICO", r"CERCO"]),
+    ("COBERTURA/LOSA DEPORTIVA", [r"COBERTURA", r"LOSA DEPORTIVA", r"CAMPO DEPORTIVO", r"GRASS", r"TECHADO"]),
+    ("CONSTRUCCIÓN NUEVA", [r"CONSTRUCCI[OÓ]N.*NUEVA", r"NUEVA INFRAESTRUCTURA", r"COSTRUCCION", r"SE HA CONSTRUIDO"]),
+    ("EQUIPAMIENTO/MOBILIARIO", [r"EQUIPAMIENTO", r"MOBILIARIO", r"COMPUTADORA", r"EQUIPO"]),
+    ("DEMOLICIÓN", [r"DEMOLICI[OÓ]N", r"DEMOLID"]),
+    ("OTRO", []),
+]
+
+def categorizar_comentario(v):
+    if pd.isna(v) or str(v).strip() == "":
+        return None
+    s = str(v).strip().upper()
+    for cat, patrones in CATEGORIAS_COMENTARIOS:
+        for pat in patrones:
+            if re.search(pat, s):
+                return cat
+    return "OTRO"
 
 
 # ── 6. APLICAR NORMALIZACIÓN ─────────────────────────────────────────────────
@@ -316,6 +413,7 @@ df["f9"] = df["f9"].apply(norm_f9)
 df["comp"] = df["comp"].apply(norm_comp)
 df["fecha"] = df["fecha"].apply(norm_fecha)
 df["comentarios"] = df["comentarios"].apply(limpiar_comentarios)
+df["comentarios_grupo"] = df["comentarios"].apply(categorizar_comentario)
 
 for v in SINO_VARS:
     df[v] = df[v].apply(norm_sino)
@@ -344,13 +442,17 @@ CAMPOS_EXTRA_BANCO = {
     "banco_avance_f9":  "AVANCE_FISICO_F9",
     "banco_avance_f12b":"AVANCE_FISICO_F12B",
     "banco_monto_actualizado": "COSTO_ACTUALIZADO_BI",
-    "banco_fecha_registro":    "FECHA_REGISTRO",
-    "banco_fecha_viabilidad":  "FECHA_VIABILIDAD",
-    "banco_tiene_f8":   "TIENE_F8",
     "banco_nombre_inv": "NOMBRE_INVERSION",
     "banco_departamento": "DEPARTAMENTO_CUI",
     "banco_provincia":    "PROVINCIA_CUI",
     "banco_distrito":     "DISTRITO",
+    "banco_pliego":       "PLIEGO",
+    "banco_ejecutora":    "UEP_ULTIMA",
+    "banco_tiene_et":     "TIENE_ET_DE",
+    "banco_tiene_f8":     "TIENE_F8",
+    "banco_tiene_f9_banco": "TIENE_F9",
+    "banco_fecha_ini_ejec": "FEC_INI_F8",
+    "banco_fecha_fin_ejec": "FEC_FIN_F8",
 }
 
 def tipo_banco_a_anexo(v):
@@ -576,9 +678,16 @@ CAMPOS_EXTRA_MEF = {
     "mef_departamento": "DEPARTAMENTO",
     "mef_provincia":    "PROVINCIA",
     "mef_distrito":     "DISTRITO",
+    "mef_entidad":      "ENTIDAD",
+    "mef_tiene_et":     "EXPEDIENTE_TECNICO",
     "mef_tiene_f8":     "TIENE_F8",
+    "mef_tiene_f9_mef": "TIENE_F9",
     "mef_culminada":    "CULMINADA",
     "mef_monto_viable": "MONTO_VIABLE",
+    "mef_fecha_ini_ejec": "FEC_INI_EJECUCION",
+    "mef_fecha_fin_ejec": "FEC_FIN_EJUCION",
+    "mef_inicio_ejec_fisica": "INICIO_EJEC_FISICA",
+    "mef_culmin_ejec_fisica": "CULMINACION_EJEC_FISICA",
 }
 
 if mef_dict is not None:
@@ -742,6 +851,69 @@ else:
     df["cod_mod_match"] = ""
     df["vinc_grupo"] = ""
 
+# ── 8.5 UNIFICAR CAMPOS: una sola fecha, pliego, UE, ET, F8, F9 ────────────
+# Fecha: prioridad Banco > MEF > Anexo1. Eliminar 00/01/1900.
+def _clean_date_field(v):
+    if pd.isna(v) or str(v).strip() in {"", "nan"}:
+        return None
+    s = str(v).strip()
+    if "1900" in s:
+        return None
+    return s
+
+for idx, row in df.iterrows():
+    # fecha unificada
+    fecha_final = _clean_date_field(row.get("banco_fecha_ini_ejec"))
+    if not fecha_final:
+        fecha_final = _clean_date_field(row.get("mef_fecha_ini_ejec"))
+    if not fecha_final:
+        fecha_final = _clean_date_field(row.get("mef_inicio_ejec_fisica"))
+    if not fecha_final:
+        fecha_final = _clean_date_field(row.get("fecha"))
+    df.at[idx, "fecha"] = norm_fecha(fecha_final) if fecha_final else row.get("fecha")
+
+    # pliego/UE unificada
+    if pd.isna(row.get("banco_pliego")) or str(row.get("banco_pliego")).strip() in {"", "nan"}:
+        if pd.notna(row.get("mef_entidad")) and str(row.get("mef_entidad")).strip() not in {"", "nan"}:
+            df.at[idx, "banco_pliego"] = str(row.get("mef_entidad")).strip()
+
+    # ET unificada
+    et = row.get("banco_tiene_et")
+    if pd.isna(et) or str(et).strip() in {"", "nan"}:
+        et = row.get("mef_tiene_et")
+    if pd.notna(et) and str(et).strip().upper() in {"SI", "SÍ", "NO"}:
+        df.at[idx, "tiene_et"] = "SI" if str(et).strip().upper() in {"SI", "SÍ"} else "NO"
+    else:
+        df.at[idx, "tiene_et"] = ""
+
+    # F8 unificada
+    f8 = row.get("banco_tiene_f8")
+    if pd.isna(f8) or str(f8).strip() in {"", "nan"}:
+        f8 = row.get("mef_tiene_f8")
+    if pd.notna(f8) and str(f8).strip().upper() in {"SI", "SÍ", "NO"}:
+        df.at[idx, "tiene_f8"] = "SI" if str(f8).strip().upper() in {"SI", "SÍ"} else "NO"
+    else:
+        df.at[idx, "tiene_f8"] = ""
+
+    # F9 unificada
+    f9_b = row.get("banco_tiene_f9_banco")
+    if pd.isna(f9_b) or str(f9_b).strip() in {"", "nan"}:
+        f9_b = row.get("mef_tiene_f9_mef")
+    if pd.notna(f9_b) and str(f9_b).strip().upper() in {"SI", "SÍ", "NO"}:
+        df.at[idx, "tiene_f9_unif"] = "SI" if str(f9_b).strip().upper() in {"SI", "SÍ"} else "NO"
+    else:
+        df.at[idx, "tiene_f9_unif"] = ""
+
+    # fecha fin ejecución unificada
+    fec_fin = _clean_date_field(row.get("banco_fecha_fin_ejec"))
+    if not fec_fin:
+        fec_fin = _clean_date_field(row.get("mef_fecha_fin_ejec"))
+    if not fec_fin:
+        fec_fin = _clean_date_field(row.get("mef_culmin_ejec_fisica"))
+    df.at[idx, "fecha_fin_ejec"] = norm_fecha(fec_fin) if fec_fin else ""
+
+print("   Campos unificados (fecha, pliego, UE, ET, F8, F9)")
+
 # ── 9. SEPARAR BASES ────────────────────────────────────────────────────────
 err_cols = [f"err_{v}" for v in CHECK_VARS] + ["tiene_error"]
 df_clean = df[df["tiene_error"] == 0].drop(columns=err_cols)
@@ -817,27 +989,22 @@ DICCIONARIO = [
     {"variable": "mobil", "descripcion": "¿Reposición/dotación de mobiliario y equipamiento? (SÍ/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO"},
     {"variable": "agua", "descripcion": "¿Acceso a agua y desagüe? (SÍ/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO"},
     {"variable": "elec", "descripcion": "¿Acceso a energía eléctrica? (SÍ/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO"},
-    {"variable": "comentarios", "descripcion": "Comentarios adicionales", "tipo": "texto", "regla_limpieza": "Limpieza de espacios extra"},
-    {"variable": "cui_en_banco", "descripcion": "¿El CUI existe en el Banco de Inversiones?", "tipo": "texto", "regla_limpieza": "SI / NO / NO VERIFICADO"},
-    {"variable": "banco_estado", "descripcion": "Estado de la inversión (del Banco)", "tipo": "texto", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
-    {"variable": "banco_situacion", "descripcion": "Situación de la inversión (del Banco)", "tipo": "texto", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
-    {"variable": "banco_avance_f9", "descripcion": "Avance físico F9 (del Banco)", "tipo": "numérico", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
-    {"variable": "banco_avance_f12b", "descripcion": "Avance físico F12B (del Banco)", "tipo": "numérico", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
-    {"variable": "banco_monto_actualizado", "descripcion": "Costo actualizado (del Banco)", "tipo": "numérico", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
-    {"variable": "banco_nombre_inv", "descripcion": "Nombre de la inversión (del Banco)", "tipo": "texto", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
-    {"variable": "cui_en_mef", "descripcion": "¿El CUI existe en Base MEF Completa?", "tipo": "texto", "regla_limpieza": "SI / NO. Respaldo para CUI que no están en Banco MINEDU"},
-    {"variable": "mef_estado", "descripcion": "Estado de la inversión (Base MEF)", "tipo": "texto", "regla_limpieza": "Solo si no está en Banco MINEDU"},
-    {"variable": "mef_situacion", "descripcion": "Situación de la inversión (Base MEF)", "tipo": "texto", "regla_limpieza": "Solo si no está en Banco MINEDU"},
-    {"variable": "mef_funcion", "descripcion": "Función (cadena funcional, Base MEF)", "tipo": "texto", "regla_limpieza": "Permite identificar CUI con otra cadena funcional (no Educación)"},
-    {"variable": "mef_programa", "descripcion": "Programa (cadena funcional, Base MEF)", "tipo": "texto", "regla_limpieza": "Solo si no está en Banco MINEDU"},
-    {"variable": "mef_nombre_inv", "descripcion": "Nombre de la inversión (Base MEF)", "tipo": "texto", "regla_limpieza": "Solo si no está en Banco MINEDU"},
-    {"variable": "mef_monto_viable", "descripcion": "Monto viable (Base MEF)", "tipo": "numérico", "regla_limpieza": "Solo si no está en Banco MINEDU"},
-    {"variable": "cui_en_vinc", "descripcion": "¿El CUI existe en Vinculaciones MEF?", "tipo": "texto", "regla_limpieza": "SI / NO"},
-    {"variable": "cod_local_oficial", "descripcion": "Códigos locales oficiales desde Vinculaciones", "tipo": "texto (sep /)", "regla_limpieza": "Lista desde Vinculaciones MEF para ese CUI"},
-    {"variable": "cod_mod_oficial", "descripcion": "Códigos modulares oficiales desde Vinculaciones", "tipo": "texto (sep /)", "regla_limpieza": "Lista desde Vinculaciones MEF para ese CUI"},
-    {"variable": "cod_local_match", "descripcion": "¿cod_local del Anexo coincide con el oficial?", "tipo": "texto", "regla_limpieza": "SI / MISMATCH / COMPLETADO"},
-    {"variable": "cod_mod_match", "descripcion": "¿cod_mod del Anexo coincide con el oficial?", "tipo": "texto", "regla_limpieza": "SI / MISMATCH / COMPLETADO"},
-    {"variable": "vinc_grupo", "descripcion": "Grupo de la inversión (Básica, Superior, etc.)", "tipo": "texto", "regla_limpieza": "Desde Vinculaciones MEF"},
+    {"variable": "comentarios", "descripcion": "Comentarios adicionales (texto original)", "tipo": "texto", "regla_limpieza": "Limpieza de espacios extra"},
+    {"variable": "comentarios_grupo", "descripcion": "Categoría del comentario (20 grupos)", "tipo": "texto", "regla_limpieza": "Clasificación automática por palabras clave"},
+    {"variable": "tiene_et", "descripcion": "¿Tiene Expediente Técnico? (unificado)", "tipo": "texto", "regla_limpieza": "SI/NO. Prioridad: Banco MINEDU > MEF"},
+    {"variable": "tiene_f8", "descripcion": "¿Tiene F8? (unificado)", "tipo": "texto", "regla_limpieza": "SI/NO. Prioridad: Banco MINEDU > MEF"},
+    {"variable": "tiene_f9_unif", "descripcion": "¿Tiene F9? (unificado desde Banco/MEF)", "tipo": "texto", "regla_limpieza": "SI/NO. Prioridad: Banco MINEDU > MEF"},
+    {"variable": "fecha_fin_ejec", "descripcion": "Fecha fin de ejecución (unificada)", "tipo": "fecha", "regla_limpieza": "Prioridad: Banco > MEF"},
+    {"variable": "banco_pliego", "descripcion": "Pliego (del Banco MINEDU)", "tipo": "texto", "regla_limpieza": "O entidad (MEF) si no hay dato MINEDU"},
+    {"variable": "banco_ejecutora", "descripcion": "Unidad Ejecutora (del Banco MINEDU)", "tipo": "texto", "regla_limpieza": "UEP última del Banco"},
+    {"variable": "cui_en_banco", "descripcion": "¿CUI en Banco MINEDU?", "tipo": "texto", "regla_limpieza": "SI / NO"},
+    {"variable": "cui_en_mef", "descripcion": "¿CUI en Base MEF Completa?", "tipo": "texto", "regla_limpieza": "SI / NO"},
+    {"variable": "mef_funcion", "descripcion": "Función (cadena funcional, Base MEF)", "tipo": "texto", "regla_limpieza": "Identifica CUI con otra cadena funcional"},
+    {"variable": "cui_en_vinc", "descripcion": "¿CUI en Vinculaciones MEF?", "tipo": "texto", "regla_limpieza": "SI / NO"},
+    {"variable": "cod_local_oficial", "descripcion": "Códigos locales oficiales (Vinculaciones)", "tipo": "texto (sep /)", "regla_limpieza": "Lista desde Vinculaciones MEF"},
+    {"variable": "cod_mod_oficial", "descripcion": "Códigos modulares oficiales (Vinculaciones)", "tipo": "texto (sep /)", "regla_limpieza": "Lista desde Vinculaciones MEF"},
+    {"variable": "cod_local_match", "descripcion": "¿cod_local coincide con oficial?", "tipo": "texto", "regla_limpieza": "SI / MISMATCH / COMPLETADO"},
+    {"variable": "cod_mod_match", "descripcion": "¿cod_mod coincide con oficial?", "tipo": "texto", "regla_limpieza": "SI / MISMATCH / COMPLETADO"},
 ]
 df_diccionario = pd.DataFrame(DICCIONARIO)
 
