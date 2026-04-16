@@ -6,6 +6,14 @@
 * Correo: diplan11@minedu.gob.pe
 * Fecha de actualización: 16/04/2026
 *
+* Flujo:
+*   1-11. Limpieza de campos del Anexo 1
+*   12.   Preparar Banco de Inversiones (2026.04.13)
+*   13.   Preparar Vinculaciones (2026.04.14) - agrupa por CUI
+*   14.   Cruce: Anexo1 <- Banco (prevalece Banco en tipo/monto/f9)
+*         Cruce: Anexo1 <- Vinculaciones (valida y completa cod_local/cod_mod)
+*   15.   Separar base limpia y base con errores, exportar a Excel
+*
 * ===========================================================================
 
 clear all
@@ -417,8 +425,199 @@ drop cod_mod_clean n_codigos _parte_* _cod_*
 * si queda algo que no es digitos y /, es error
 replace err_cod_mod = 1 if !regexm(cod_mod, "^[0-9/]*$") & cod_mod != ""
 
+* guardo el estado del anexo limpio antes del cruce
+save "${rep_cons_t}\anexo1_limpio_precuce.dta", replace
+
 * -------------------------------------------------------------------------
-* 12. SEPARAR BASES
+* 12. PREPARAR BANCO DE INVERSIONES
+* -------------------------------------------------------------------------
+* el header real esta en la fila 5 (A5), las primeras 4 filas son metadata
+
+capture noisily {
+	import excel using "${rep_cons_i}\2026.04.13 Base de Inversiones.xlsx", ///
+		sheet("Data") cellrange(A5) firstrow clear
+
+	* renombrar CUI para el match
+	capture rename CODIGO_UNICO cui_banco
+	tostring cui_banco, replace force
+	replace cui_banco = strtrim(cui_banco)
+	replace cui_banco = regexr(cui_banco, "\.0+$", "")
+
+	* pad a 7 dígitos
+	replace cui_banco = "0" * (7 - strlen(cui_banco)) + cui_banco ///
+		if strlen(cui_banco) < 7 & strlen(cui_banco) > 0
+
+	* conservar solo las variables que voy a usar para enriquecer
+	keep cui_banco DES_TIPO_FORMATO COSTO_INV_TOTAL_BI TIENE_F9 ///
+		AVANCE_FISICO_F9 AVANCE_FISICO_F12B ESTADO SITUACION ///
+		COSTO_ACTUALIZADO_BI FECHA_REGISTRO FECHA_VIABILIDAD ///
+		TIENE_F8 NOMBRE_INVERSION DEPARTAMENTO_CUI PROVINCIA_CUI DISTRITO
+
+	* renombrar para evitar conflictos con anexo
+	rename DES_TIPO_FORMATO banco_tipo_raw
+	rename COSTO_INV_TOTAL_BI banco_monto
+	rename TIENE_F9 banco_f9
+	rename AVANCE_FISICO_F9 banco_avance_f9
+	rename AVANCE_FISICO_F12B banco_avance_f12b
+	rename ESTADO banco_estado
+	rename SITUACION banco_situacion
+	rename COSTO_ACTUALIZADO_BI banco_monto_actualizado
+	rename FECHA_REGISTRO banco_fecha_registro
+	rename FECHA_VIABILIDAD banco_fecha_viabilidad
+	rename TIENE_F8 banco_tiene_f8
+	rename NOMBRE_INVERSION banco_nombre_inv
+	rename DEPARTAMENTO_CUI banco_departamento
+	rename PROVINCIA_CUI banco_provincia
+	rename DISTRITO banco_distrito
+
+	duplicates drop cui_banco, force
+	save "${rep_cons_t}\banco_prep.dta", replace
+
+	di "Banco de Inversiones preparado: `=_N' registros únicos"
+}
+
+* -------------------------------------------------------------------------
+* 13. PREPARAR VINCULACIONES (agrupar por CUI)
+* -------------------------------------------------------------------------
+* genera un dataset con un registro por CUI y las listas de cod_local y cod_mod
+
+capture noisily {
+	import excel using "${rep_cons_i}\2026.04.14 Vinculaciones.xlsx", ///
+		sheet("Vinculaciones") firstrow clear
+
+	* Filtrar solo estados "Vinculado"
+	keep if regexm(ESTADO_VINCULACION, "^Vinculado")
+
+	* Normalizar CUI a 7, cod_local a 6, cod_mod a 7
+	tostring CUI CODIGO_LOCAL CODIGO_MODULAR, replace force
+
+	foreach v in CUI CODIGO_LOCAL CODIGO_MODULAR {
+		replace `v' = strtrim(`v')
+		replace `v' = regexr(`v', "\.0+$", "")
+	}
+
+	replace CUI = "0" * (7 - strlen(CUI)) + CUI ///
+		if strlen(CUI) < 7 & strlen(CUI) > 0
+	replace CODIGO_LOCAL = "0" * (6 - strlen(CODIGO_LOCAL)) + CODIGO_LOCAL ///
+		if strlen(CODIGO_LOCAL) < 6 & strlen(CODIGO_LOCAL) > 0
+	replace CODIGO_MODULAR = "0" * (7 - strlen(CODIGO_MODULAR)) + CODIGO_MODULAR ///
+		if strlen(CODIGO_MODULAR) < 7 & strlen(CODIGO_MODULAR) > 0
+
+	rename CUI cui_banco
+	rename CODIGO_LOCAL vinc_cod_local
+	rename CODIGO_MODULAR vinc_cod_mod
+	rename GRUPO vinc_grupo
+
+	keep cui_banco vinc_cod_local vinc_cod_mod vinc_grupo
+
+	* colapsar a una fila por CUI: concatenar cod_local y cod_mod únicos con /
+	duplicates drop cui_banco vinc_cod_local, force
+	bysort cui_banco (vinc_cod_local): gen _seq_cl = _n
+	qui sum _seq_cl
+	local max_cl = r(max)
+
+	bysort cui_banco (vinc_cod_local): gen cod_local_oficial = vinc_cod_local if _n == 1
+	bysort cui_banco (vinc_cod_local): replace cod_local_oficial = ///
+		cod_local_oficial[_n-1] + "/" + vinc_cod_local if _n > 1
+	bysort cui_banco (vinc_cod_local): replace cod_local_oficial = cod_local_oficial[_N]
+
+	bysort cui_banco (vinc_cod_mod): gen cod_mod_oficial = vinc_cod_mod if _n == 1
+	bysort cui_banco (vinc_cod_mod): replace cod_mod_oficial = ///
+		cod_mod_oficial[_n-1] + "/" + vinc_cod_mod if _n > 1
+	bysort cui_banco (vinc_cod_mod): replace cod_mod_oficial = cod_mod_oficial[_N]
+
+	bysort cui_banco: keep if _n == 1
+	drop _seq_cl vinc_cod_local vinc_cod_mod
+
+	save "${rep_cons_t}\vinc_prep.dta", replace
+	di "Vinculaciones preparado: `=_N' CUIs únicos"
+}
+
+* -------------------------------------------------------------------------
+* 14. CRUCE CON BANCO Y VINCULACIONES
+* -------------------------------------------------------------------------
+
+use "${rep_cons_t}\anexo1_limpio_precuce.dta", clear
+
+* para el merge uso solo el primer CUI si hay varios (no debería pasar en anexo)
+gen cui_primero = cui
+replace cui_primero = substr(cui, 1, strpos(cui + "/", "/") - 1) if strpos(cui, "/") > 0
+
+rename cui_primero cui_banco
+
+* --- merge con Banco de Inversiones ---
+capture confirm file "${rep_cons_t}\banco_prep.dta"
+if _rc == 0 {
+	merge m:1 cui_banco using "${rep_cons_t}\banco_prep.dta", ///
+		keep(master match) generate(_merge_banco)
+	gen cui_en_banco = "SI" if _merge_banco == 3
+	replace cui_en_banco = "NO" if _merge_banco == 1
+	drop _merge_banco
+
+	* reemplazar tipo si hay dato del banco (prevalece Banco)
+	replace tipo = "IOARR" if regexm(upper(banco_tipo_raw), "IOARR|FUR") & !missing(banco_tipo_raw)
+	replace tipo = "IRI"   if regexm(upper(banco_tipo_raw), "IRI") & !missing(banco_tipo_raw) & tipo != "IOARR"
+	replace tipo = "PI"    if regexm(upper(banco_tipo_raw), "PROYECTO") & !missing(banco_tipo_raw) & !inlist(tipo, "IOARR", "IRI")
+	replace err_tipo = 0 if cui_en_banco == "SI" & inlist(tipo, "IOARR", "IRI", "PI")
+
+	* reemplazar monto si hay dato del banco
+	capture destring banco_monto, replace force
+	replace monto = banco_monto if !missing(banco_monto) & cui_en_banco == "SI"
+	replace err_monto = 0 if cui_en_banco == "SI" & !missing(monto)
+
+	* reemplazar f9 si hay dato del banco
+	replace f9 = upper(strtrim(banco_f9)) if inlist(upper(strtrim(banco_f9)), "SI", "NO") & cui_en_banco == "SI"
+	replace err_f9 = 0 if cui_en_banco == "SI" & inlist(f9, "SI", "NO")
+
+	* completar avance si falta
+	capture destring banco_avance_f9 banco_avance_f12b, replace force
+	replace avance = banco_avance_f9 if missing(avance) & !missing(banco_avance_f9) & banco_avance_f9 > 0
+	replace avance = banco_avance_f12b if missing(avance) & !missing(banco_avance_f12b)
+	replace avance = avance * 100 if avance >= 0 & avance <= 1 & !missing(avance)
+	replace err_avance = 0 if !missing(avance) & avance >= 0 & avance <= 100
+
+	drop banco_tipo_raw banco_monto banco_f9
+}
+else {
+	gen cui_en_banco = "NO VERIFICADO"
+}
+
+* --- merge con Vinculaciones ---
+capture confirm file "${rep_cons_t}\vinc_prep.dta"
+if _rc == 0 {
+	merge m:1 cui_banco using "${rep_cons_t}\vinc_prep.dta", ///
+		keep(master match) generate(_merge_vinc)
+	gen cui_en_vinc = "SI" if _merge_vinc == 3
+	replace cui_en_vinc = "NO" if _merge_vinc == 1
+	drop _merge_vinc
+
+	* validar si los cod_local del anexo coinciden con los oficiales
+	gen cod_local_match = ""
+	replace cod_local_match = "SI" if cod_local == cod_local_oficial & !missing(cod_local) & !missing(cod_local_oficial)
+	replace cod_local_match = "MISMATCH" if cod_local != cod_local_oficial & !missing(cod_local) & !missing(cod_local_oficial)
+	replace cod_local_match = "COMPLETADO" if missing(cod_local) & !missing(cod_local_oficial)
+	replace cod_local = cod_local_oficial if missing(cod_local) & !missing(cod_local_oficial)
+
+	* idem para cod_mod
+	gen cod_mod_match = ""
+	replace cod_mod_match = "SI" if cod_mod == cod_mod_oficial & !missing(cod_mod) & !missing(cod_mod_oficial)
+	replace cod_mod_match = "MISMATCH" if cod_mod != cod_mod_oficial & !missing(cod_mod) & !missing(cod_mod_oficial)
+	replace cod_mod_match = "COMPLETADO" if missing(cod_mod) & !missing(cod_mod_oficial)
+	replace cod_mod = cod_mod_oficial if missing(cod_mod) & !missing(cod_mod_oficial)
+}
+else {
+	gen cui_en_vinc = "NO VERIFICADO"
+	gen cod_local_oficial = ""
+	gen cod_mod_oficial = ""
+	gen cod_local_match = ""
+	gen cod_mod_match = ""
+	gen vinc_grupo = ""
+}
+
+rename cui_banco cui_primero_usado
+
+* -------------------------------------------------------------------------
+* 15. SEPARAR BASES
 * -------------------------------------------------------------------------
 
 gen byte tiene_error = (err_cui | err_tipo | err_monto | err_avance | ///
@@ -429,10 +628,13 @@ gen byte tiene_error = (err_cui | err_tipo | err_monto | err_avance | ///
 * --- BASE LIMPIA ---
 preserve
 	keep if tiene_error == 0
-	drop err_* tiene_error monto_orig avance_orig
+	drop err_* tiene_error
+	capture drop monto_orig avance_orig cui_primero_usado
 	count
 	di "Registros limpios: `r(N)'"
 	save "${rep_cons_o}\Anexo1_base_limpia.dta", replace
+	export excel using "${rep_cons_o}\Anexo1_base_limpia.xlsx", ///
+		firstrow(variables) replace
 restore
 
 * --- BASE ERRORES ---
@@ -441,7 +643,25 @@ preserve
 	count
 	di "Registros con errores: `r(N)'"
 	save "${rep_cons_o}\Anexo1_base_errores.dta", replace
+	export excel using "${rep_cons_o}\Anexo1_base_errores.xlsx", ///
+		firstrow(variables) replace
 restore
+
+* --- RESUMEN DE CRUCES ---
+di ""
+di "=== RESUMEN DE CRUCES ==="
+qui count if cui_en_banco == "SI"
+di "  CUI encontrados en Banco de Inversiones: `r(N)'"
+qui count if cui_en_vinc == "SI"
+di "  CUI encontrados en Vinculaciones: `r(N)'"
+qui count if cod_local_match == "COMPLETADO"
+di "  cod_local completados desde Vinculaciones: `r(N)'"
+qui count if cod_mod_match == "COMPLETADO"
+di "  cod_mod completados desde Vinculaciones: `r(N)'"
+qui count if cod_local_match == "MISMATCH"
+di "  cod_local con MISMATCH: `r(N)'"
+qui count if cod_mod_match == "MISMATCH"
+di "  cod_mod con MISMATCH: `r(N)'"
 
 di ""
 di "=== RESUMEN DE ERRORES POR CAMPO ==="
