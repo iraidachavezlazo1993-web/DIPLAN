@@ -10,13 +10,17 @@ import re
 from pathlib import Path
 
 # ── 0. RUTAS ──────────────────────────────────────────────────────────────────
-BASE_DIR = Path(__file__).resolve().parent
-INPUT = BASE_DIR / "Anexo_1_avance_GR_GL.xlsx"
-INPUT_INV = BASE_DIR / "2026.03.23 Base de Inversiones_.xlsx"
-OUT_CLEAN = BASE_DIR / "Anexo1_base_limpia.xlsx"
-OUT_ERRORS = BASE_DIR / "Anexo1_base_errores.xlsx"
-OUT_PENDIENTES = BASE_DIR / "Anexo1_pendientes_registro.xlsx"
-OUT_REPORTE = BASE_DIR / "Anexo1_reporte_completitud.xlsx"
+ruta = Path(r"C:\Users\diplan11\Documents\00_MINEDU\TRABAJO-MINEDU\SOL_GR_GL")
+entrada = ruta / "01_input"
+salida  = ruta / "03_output"
+temporal = ruta / "04_temporal"
+
+INPUT = entrada / "Anexo_1_avance_GR_GL.xlsx"
+INPUT_INV = entrada / "2026.03.23 Base de Inversiones_.xlsx"
+OUT_CLEAN = salida / "Anexo1_base_limpia.xlsx"
+OUT_ERRORS = salida / "Anexo1_base_errores.xlsx"
+OUT_PENDIENTES = salida / "Anexo1_pendientes_registro.xlsx"
+OUT_REPORTE = salida / "Anexo1_reporte_completitud.xlsx"
 
 print("=" * 60)
 print("LIMPIEZA DEL ANEXO 1 - Inversiones GR/GL")
