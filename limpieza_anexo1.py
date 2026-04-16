@@ -84,32 +84,9 @@ for field in CAMPOS_GR_GL:
 
 # ── 5. FUNCIONES DE NORMALIZACIÓN ────────────────────────────────────────────
 
-def norm_cod_local(v):
-    """Código local: 6 dígitos, pad con ceros a la izquierda. Letras = missing."""
-    if pd.isna(v) or str(v).strip() == "":
-        return v
-    s = re.sub(r"\.0+$", "", str(v).strip())
-    s = re.sub(r"\s+", "", s)
-    if not re.match(r"^\d+$", s):
-        return None
-    return s.zfill(6)
-
-
-def norm_cui(v):
-    """CUI: solo números, 7 dígitos con pad de ceros a la izquierda."""
-    if pd.isna(v):
-        return v
-    s = str(v).strip()
-    s = re.sub(r"\.0+$", "", s)
-    if re.match(r"^\d+$", s):
-        return s.zfill(7)
-    m = re.search(r"\d{5,}", s)
-    return m.group().zfill(7) if m else ERROR_FLAG
-
-
-def norm_cod_mod(v):
-    """Código modular: 7 dígitos cada uno, separados por /.
-    Múltiples códigos se unifican con /. Letras = missing."""
+def _parse_codigos(v, n_digitos, letras_missing=True):
+    """Lógica común: separa múltiples códigos por /, pad cada uno a n_digitos.
+    Letras = missing si letras_missing=True."""
     if pd.isna(v) or str(v).strip() == "":
         return v
     s = str(v).strip()
@@ -118,13 +95,13 @@ def norm_cod_mod(v):
     s_upper = s.upper()
     if s_upper in {"SI", "SÍ", "NO", "NINGUNA", "0"}:
         return None
-    if re.search(r"[a-zA-Z]", s):
+    if letras_missing and re.search(r"[a-zA-Z]", s):
         return None
+    s = re.sub(r"\.0+$", "", s)
     s = s.replace("/", ",").replace("-", ",")
     s = s.replace("\n", ",").replace("\r", ",")
     s = re.sub(r"\s+", "", s)
-    s = re.sub(r",+", ",", s)
-    s = s.strip(",")
+    s = re.sub(r",+", ",", s).strip(",")
     if not re.match(r"^[\d,]+$", s):
         return None
     codigos = []
@@ -132,9 +109,36 @@ def norm_cod_mod(v):
         cod = cod.strip()
         if cod:
             cod = re.sub(r"\.0+$", "", cod)
-            cod = cod.zfill(7)
+            cod = cod.zfill(n_digitos)
             codigos.append(cod)
     return "/".join(codigos) if codigos else None
+
+
+def norm_cod_local(v):
+    """Código local: 6 dígitos cada uno, separados por /. Letras = missing."""
+    return _parse_codigos(v, 6)
+
+
+def norm_cui(v):
+    """CUI: 7 dígitos cada uno, separados por /. Intenta rescatar si tiene letras."""
+    if pd.isna(v):
+        return v
+    s = str(v).strip()
+    s = re.sub(r"\.0+$", "", s)
+    # si ya es numérico puro (o con separadores), usar lógica estándar
+    clean = s.replace("/", ",").replace("-", ",").replace(" ", "")
+    clean = re.sub(r",+", ",", clean).strip(",")
+    if re.match(r"^[\d,]+$", clean):
+        codigos = [c.zfill(7) for c in clean.split(",") if c]
+        return "/".join(codigos) if codigos else ERROR_FLAG
+    # intentar rescatar secuencia de 5+ dígitos
+    m = re.search(r"\d{5,}", s)
+    return m.group().zfill(7) if m else ERROR_FLAG
+
+
+def norm_cod_mod(v):
+    """Código modular: 7 dígitos cada uno, separados por /. Letras = missing."""
+    return _parse_codigos(v, 7)
 
 
 def norm_tipo(v):

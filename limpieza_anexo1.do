@@ -90,7 +90,7 @@ foreach v in cui tipo monto avance f9 comp unid cod_mod demol nueva reforz cerco
 }
 
 * -------------------------------------------------------------------------
-* 3. LIMPIAR CODIGO LOCAL (6 dígitos, pad con ceros a la izquierda)
+* 3. LIMPIAR CODIGO LOCAL (6 dígitos, separados por /)
 * -------------------------------------------------------------------------
 
 capture tostring cod_local, replace force
@@ -98,33 +98,113 @@ replace cod_local = strtrim(cod_local)
 replace cod_local = subinstr(cod_local, " ", "", .)
 replace cod_local = "" if cod_local == "."
 
+* guiones y underscores => missing
+replace cod_local = "" if inlist(cod_local, "-", "_", "--", "---")
+replace cod_local = "" if regexm(cod_local, "^-+$")
+
 * si tiene letras => missing
 replace cod_local = "" if regexm(cod_local, "[a-zA-Z]")
 
 * quitar decimales (.0)
 replace cod_local = regexr(cod_local, "\.0+$", "")
 
-* pad con ceros a la izquierda hasta 6 dígitos
-replace cod_local = "0" * (6 - strlen(cod_local)) + cod_local ///
-	if strlen(cod_local) < 6 & strlen(cod_local) > 0
+* separadores: /, -, comas => /
+replace cod_local = subinstr(cod_local, ",", "/", .)
+replace cod_local = subinstr(cod_local, "-", "/", .)
+replace cod_local = subinstr(cod_local, char(10), "/", .)
+replace cod_local = subinstr(cod_local, char(13), "/", .)
+replace cod_local = subinstr(cod_local, " ", "", .)
+
+* limpiar separadores dobles
+replace cod_local = subinstr(cod_local, "//", "/", .)
+replace cod_local = regexr(cod_local, "^/", "")
+replace cod_local = regexr(cod_local, "/$", "")
+
+* pad cada código a 6 dígitos con ceros a la izquierda
+* para múltiples códigos separados por /, procesamos cada uno
+split cod_local, parse("/") gen(_cl_parte_)
+
+gen cod_local_clean = ""
+local maxparts = 10
+forvalues k = 1/`maxparts' {
+	capture confirm variable _cl_parte_`k'
+	if _rc == 0 {
+		replace _cl_parte_`k' = strtrim(_cl_parte_`k')
+		replace _cl_parte_`k' = "0" * (6 - strlen(_cl_parte_`k')) + _cl_parte_`k' ///
+			if strlen(_cl_parte_`k') < 6 & strlen(_cl_parte_`k') > 0
+	}
+}
+
+forvalues k = 1/`maxparts' {
+	capture confirm variable _cl_parte_`k'
+	if _rc == 0 {
+		replace cod_local_clean = cod_local_clean + "/" + _cl_parte_`k' ///
+			if _cl_parte_`k' != "" & cod_local_clean != ""
+		replace cod_local_clean = _cl_parte_`k' ///
+			if _cl_parte_`k' != "" & cod_local_clean == ""
+	}
+}
+
+replace cod_local = cod_local_clean
+drop cod_local_clean _cl_parte_*
 
 * -------------------------------------------------------------------------
-* 4. LIMPIAR CUI (solo números)
+* 4. LIMPIAR CUI (7 dígitos, separados por /)
 * -------------------------------------------------------------------------
 
 replace cui = strtrim(cui)
 replace cui = subinstr(cui, " ", "", .)
 
-* si no es numerico puro, intento rescatar la secuencia de digitos
-replace err_cui = 1 if !regexm(cui, "^[0-9]+$") & cui != ""
+* quitar decimales (.0)
+replace cui = regexr(cui, "\.0+$", "")
+
+* separadores: /, -, comas => /
+replace cui = subinstr(cui, ",", "/", .)
+replace cui = subinstr(cui, "-", "/", .)
+replace cui = subinstr(cui, char(10), "/", .)
+replace cui = subinstr(cui, char(13), "/", .)
+replace cui = subinstr(cui, " ", "", .)
+
+* limpiar separadores dobles
+replace cui = subinstr(cui, "//", "/", .)
+replace cui = regexr(cui, "^/", "")
+replace cui = regexr(cui, "/$", "")
+
+* si tiene letras y no se puede rescatar => error
+replace err_cui = 1 if regexm(cui, "[a-zA-Z]") & cui != ""
 * intento sacar algo util: secuencia de 5+ digitos
 replace cui = regexs(0) if regexm(cui, "[0-9]{5,}") & err_cui == 1
-* si logre rescatar, quito el error
-replace err_cui = 0 if regexm(cui, "^[0-9]+$") & err_cui == 1
+replace err_cui = 0 if regexm(cui, "^[0-9/]+$") & err_cui == 1
 
-* pad con ceros a la izquierda hasta 7 dígitos
-replace cui = "0" * (7 - strlen(cui)) + cui ///
-	if strlen(cui) < 7 & strlen(cui) > 0
+* pad cada código a 7 dígitos con ceros a la izquierda
+split cui, parse("/") gen(_cui_parte_)
+
+gen cui_clean = ""
+local maxparts = 10
+forvalues k = 1/`maxparts' {
+	capture confirm variable _cui_parte_`k'
+	if _rc == 0 {
+		replace _cui_parte_`k' = strtrim(_cui_parte_`k')
+		replace _cui_parte_`k' = "0" * (7 - strlen(_cui_parte_`k')) + _cui_parte_`k' ///
+			if strlen(_cui_parte_`k') < 7 & strlen(_cui_parte_`k') > 0
+	}
+}
+
+forvalues k = 1/`maxparts' {
+	capture confirm variable _cui_parte_`k'
+	if _rc == 0 {
+		replace cui_clean = cui_clean + "/" + _cui_parte_`k' ///
+			if _cui_parte_`k' != "" & cui_clean != ""
+		replace cui_clean = _cui_parte_`k' ///
+			if _cui_parte_`k' != "" & cui_clean == ""
+	}
+}
+
+replace cui = cui_clean
+drop cui_clean _cui_parte_*
+
+* si queda algo que no es digitos y /, es error
+replace err_cui = 1 if !regexm(cui, "^[0-9/]+$") & cui != "" & err_cui == 0
 
 * -------------------------------------------------------------------------
 * 5. LIMPIAR TIPO DE INVERSION
