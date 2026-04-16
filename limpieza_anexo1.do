@@ -122,6 +122,10 @@ replace cui = regexs(0) if regexm(cui, "[0-9]{5,}") & err_cui == 1
 * si logre rescatar, quito el error
 replace err_cui = 0 if regexm(cui, "^[0-9]+$") & err_cui == 1
 
+* pad con ceros a la izquierda hasta 7 dígitos
+replace cui = "0" * (7 - strlen(cui)) + cui ///
+	if strlen(cui) < 7 & strlen(cui) > 0
+
 * -------------------------------------------------------------------------
 * 5. LIMPIAR TIPO DE INVERSION
 * -------------------------------------------------------------------------

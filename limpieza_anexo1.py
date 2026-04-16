@@ -96,15 +96,15 @@ def norm_cod_local(v):
 
 
 def norm_cui(v):
-    """CUI: solo números. Intenta rescatar secuencia de 5+ dígitos."""
+    """CUI: solo números, 7 dígitos con pad de ceros a la izquierda."""
     if pd.isna(v):
         return v
     s = str(v).strip()
     s = re.sub(r"\.0+$", "", s)
     if re.match(r"^\d+$", s):
-        return s
+        return s.zfill(7)
     m = re.search(r"\d{5,}", s)
-    return m.group() if m else ERROR_FLAG
+    return m.group().zfill(7) if m else ERROR_FLAG
 
 
 def norm_cod_mod(v):
@@ -325,6 +325,40 @@ for v in CHECK_VARS:
 df["tiene_error"] = df[[f"err_{v}" for v in CHECK_VARS]].max(axis=1)
 
 # ── 8. CRUZAR CON BASE DE INVERSIONES ───────────────────────────────────────
+# Mapeo: campo Anexo1 → campo Banco de Inversiones
+MAPEO_BANCO = {
+    "tipo":   "DES_TIPO_FORMATO",
+    "monto":  "COSTO_INV_TOTAL_BI",
+    "f9":     "TIENE_F9",
+}
+# Campos adicionales del Banco para enriquecer
+CAMPOS_EXTRA_BANCO = {
+    "banco_estado":     "ESTADO",
+    "banco_situacion":  "SITUACION",
+    "banco_avance_f9":  "AVANCE_FISICO_F9",
+    "banco_avance_f12b":"AVANCE_FISICO_F12B",
+    "banco_monto_actualizado": "COSTO_ACTUALIZADO_BI",
+    "banco_fecha_registro":    "FECHA_REGISTRO",
+    "banco_fecha_viabilidad":  "FECHA_VIABILIDAD",
+    "banco_tiene_f8":   "TIENE_F8",
+    "banco_nombre_inv": "NOMBRE_INVERSION",
+    "banco_departamento": "DEPARTAMENTO_CUI",
+    "banco_provincia":    "PROVINCIA_CUI",
+    "banco_distrito":     "DISTRITO",
+}
+
+def tipo_banco_a_anexo(v):
+    if pd.isna(v) or str(v).strip() == "":
+        return None
+    s = str(v).strip().upper()
+    if "IOARR" in s or "FUR" in s:
+        return "IOARR"
+    if "IRI" in s:
+        return "IRI"
+    if "PROYECTO" in s or "PI" == s:
+        return "PI"
+    return None
+
 if INPUT_INV.exists():
     print(f"\n>> Cruzando con Base de Inversiones: {INPUT_INV.name}")
     try:
@@ -332,11 +366,12 @@ if INPUT_INV.exists():
         print(f"   {len(inv):,} registros en Base de Inversiones")
 
         inv["cui_limpio"] = inv["CODIGO_UNICO"].apply(
-            lambda x: re.sub(r"\.0+$", "", str(x).strip()) if pd.notna(x) else ""
+            lambda x: re.sub(r"\.0+$", "", str(x).strip()).zfill(7) if pd.notna(x) else ""
         )
+        inv_dedup = inv.drop_duplicates(subset=["cui_limpio"], keep="first")
+        inv_dict = inv_dedup.set_index("cui_limpio")
 
-        cui_validos = set(inv["cui_limpio"].unique())
-
+        cui_validos = set(inv_dict.index)
         df["cui_en_banco"] = df["cui"].apply(
             lambda x: "SI" if str(x) in cui_validos else "NO"
         )
@@ -345,8 +380,91 @@ if INPUT_INV.exists():
         print(f"   CUI encontrados en Banco: {n_encontrados}")
         print(f"   CUI NO encontrados en Banco: {n_no_encontrados}")
 
+        if n_encontrados > 0:
+            n_reemplazados = 0
+            n_completados = 0
+
+            for idx, row in df.iterrows():
+                cui_val = str(row["cui"])
+                if cui_val not in cui_validos:
+                    continue
+                banco_row = inv_dict.loc[cui_val]
+
+                # --- tipo: prevalece Banco ---
+                banco_tipo = tipo_banco_a_anexo(banco_row.get("DES_TIPO_FORMATO"))
+                if banco_tipo:
+                    if pd.isna(row["tipo"]) or row["tipo"] == "" or row["tipo"] == ERROR_FLAG:
+                        df.at[idx, "tipo"] = banco_tipo
+                        df.at[idx, "err_tipo"] = 0
+                        n_completados += 1
+                    elif row["tipo"] != banco_tipo:
+                        df.at[idx, "tipo"] = banco_tipo
+                        df.at[idx, "err_tipo"] = 0
+                        n_reemplazados += 1
+
+                # --- monto: prevalece Banco ---
+                banco_monto = banco_row.get("COSTO_INV_TOTAL_BI")
+                if pd.notna(banco_monto) and str(banco_monto).strip() != "":
+                    try:
+                        monto_banco = str(round(float(str(banco_monto).strip()), 2))
+                        if pd.isna(row["monto"]) or row["monto"] == "" or row["monto"] == ERROR_FLAG:
+                            df.at[idx, "monto"] = monto_banco
+                            df.at[idx, "err_monto"] = 0
+                            n_completados += 1
+                        else:
+                            df.at[idx, "monto"] = monto_banco
+                            df.at[idx, "err_monto"] = 0
+                            n_reemplazados += 1
+                    except ValueError:
+                        pass
+
+                # --- f9: prevalece Banco ---
+                banco_f9 = banco_row.get("TIENE_F9")
+                if pd.notna(banco_f9) and str(banco_f9).strip().upper() in {"SI", "NO"}:
+                    banco_f9_clean = str(banco_f9).strip().upper()
+                    if pd.isna(row["f9"]) or row["f9"] == "" or row["f9"] == ERROR_FLAG:
+                        df.at[idx, "f9"] = banco_f9_clean
+                        df.at[idx, "err_f9"] = 0
+                        n_completados += 1
+                    elif row["f9"] != banco_f9_clean:
+                        df.at[idx, "f9"] = banco_f9_clean
+                        df.at[idx, "err_f9"] = 0
+                        n_reemplazados += 1
+
+                # --- avance: completar si falta (usar F9 primero, luego F12B) ---
+                if pd.isna(row["avance"]) or row["avance"] == "" or row["avance"] == ERROR_FLAG:
+                    banco_av = banco_row.get("AVANCE_FISICO_F9")
+                    if pd.isna(banco_av) or str(banco_av).strip() in {"", "0"}:
+                        banco_av = banco_row.get("AVANCE_FISICO_F12B")
+                    if pd.notna(banco_av) and str(banco_av).strip() != "":
+                        try:
+                            av = float(str(banco_av).strip())
+                            if 0 <= av <= 1:
+                                av = round(av * 100, 2)
+                            df.at[idx, "avance"] = str(round(av, 2))
+                            df.at[idx, "err_avance"] = 0
+                            n_completados += 1
+                        except ValueError:
+                            pass
+
+                # --- campos extra del Banco (enriquecer) ---
+                for col_nueva, col_banco in CAMPOS_EXTRA_BANCO.items():
+                    val = banco_row.get(col_banco)
+                    if pd.notna(val) and str(val).strip() != "":
+                        df.at[idx, col_nueva] = str(val).strip()
+
+            # recalcular errores después del cruce
+            for v in CHECK_VARS:
+                df[f"err_{v}"] = df[v].apply(lambda x: 1 if str(x) == ERROR_FLAG else 0)
+            df["tiene_error"] = df[[f"err_{v}" for v in CHECK_VARS]].max(axis=1)
+
+            print(f"   Campos reemplazados (prevalece Banco): {n_reemplazados}")
+            print(f"   Campos completados (faltaban en Anexo): {n_completados}")
+
     except Exception as e:
         print(f"   Error al cargar Base de Inversiones: {e}")
+        import traceback
+        traceback.print_exc()
         df["cui_en_banco"] = "NO VERIFICADO"
 else:
     print("\n>> Base de Inversiones no encontrada, se omite cruce")
@@ -401,11 +519,49 @@ for region in sorted(df_all["region"].dropna().unique()):
 
 df_completitud = pd.DataFrame(completitud)
 
-# ── 12. EXPORTAR ─────────────────────────────────────────────────────────────
+# ── 12. DICCIONARIO DE VARIABLES ────────────────────────────────────────────
+DICCIONARIO = [
+    {"variable": "nro", "descripcion": "Número correlativo", "tipo": "numérico", "regla_limpieza": "Sin cambios"},
+    {"variable": "cod_local", "descripcion": "Código de local educativo", "tipo": "texto (6 dígitos)", "regla_limpieza": "Pad con ceros a la izquierda hasta 6 dígitos. Letras = missing"},
+    {"variable": "region", "descripcion": "Región", "tipo": "texto", "regla_limpieza": "Normalizado a mayúsculas"},
+    {"variable": "provincia", "descripcion": "Provincia", "tipo": "texto", "regla_limpieza": "Sin cambios"},
+    {"variable": "distrito", "descripcion": "Distrito", "tipo": "texto", "regla_limpieza": "Sin cambios"},
+    {"variable": "nombre_ie", "descripcion": "Nombre de la institución educativa", "tipo": "texto", "regla_limpieza": "Sin cambios"},
+    {"variable": "cui", "descripcion": "Código Único de Inversión (CUI)", "tipo": "texto (7 dígitos)", "regla_limpieza": "Solo números. Pad con ceros hasta 7 dígitos. Se rescatan secuencias de 5+ dígitos"},
+    {"variable": "tipo", "descripcion": "Tipo de inversión (PI/IOARR/IRI)", "tipo": "texto", "regla_limpieza": "Estandarizado a PI, IOARR o IRI. Prevalece info del Banco de Inversiones"},
+    {"variable": "monto", "descripcion": "Monto de inversión (S/)", "tipo": "numérico", "regla_limpieza": "Convertido a numérico. Prevalece info del Banco de Inversiones"},
+    {"variable": "avance", "descripcion": "Avance físico (%)", "tipo": "numérico (0-100)", "regla_limpieza": "Proporción 0-1 convertida a %. Completado con Banco si falta"},
+    {"variable": "fecha", "descripcion": "Fecha de recepción de obra (o estimada)", "tipo": "fecha (dd/mm/yyyy)", "regla_limpieza": "Formato estandarizado a dd/mm/yyyy"},
+    {"variable": "f9", "descripcion": "Tiene Formato 9 (SI/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO. Prevalece info del Banco de Inversiones"},
+    {"variable": "comp", "descripcion": "Componentes de la inversión", "tipo": "texto", "regla_limpieza": "Mapeado a: 1.Infraestructura, 2.Equipamiento, 3.Mobiliario, 4.Integral"},
+    {"variable": "unid", "descripcion": "¿Intervino todas las unidades productoras? (SÍ/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO"},
+    {"variable": "cod_mod", "descripcion": "Códigos modulares intervenidos", "tipo": "texto (7 dígitos c/u)", "regla_limpieza": "Cada código con 7 dígitos, pad con ceros. Múltiples separados por /. Letras = missing"},
+    {"variable": "demol", "descripcion": "¿Demolición total o parcial? (SÍ/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO"},
+    {"variable": "nueva", "descripcion": "¿Construcción de nueva infraestructura? (SÍ/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO"},
+    {"variable": "reforz", "descripcion": "¿Reforzamiento estructural? (SÍ/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO"},
+    {"variable": "cerco", "descripcion": "¿Cerco perimétrico? (SÍ/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO"},
+    {"variable": "sust", "descripcion": "¿Sustitución parcial de edificaciones? (SÍ/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO"},
+    {"variable": "ampl", "descripcion": "¿Ampliación del área? (SÍ/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO"},
+    {"variable": "mobil", "descripcion": "¿Reposición/dotación de mobiliario y equipamiento? (SÍ/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO"},
+    {"variable": "agua", "descripcion": "¿Acceso a agua y desagüe? (SÍ/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO"},
+    {"variable": "elec", "descripcion": "¿Acceso a energía eléctrica? (SÍ/NO)", "tipo": "texto", "regla_limpieza": "Estandarizado a SI o NO"},
+    {"variable": "comentarios", "descripcion": "Comentarios adicionales", "tipo": "texto", "regla_limpieza": "Limpieza de espacios extra"},
+    {"variable": "cui_en_banco", "descripcion": "¿El CUI existe en el Banco de Inversiones?", "tipo": "texto", "regla_limpieza": "SI / NO / NO VERIFICADO"},
+    {"variable": "banco_estado", "descripcion": "Estado de la inversión (del Banco)", "tipo": "texto", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
+    {"variable": "banco_situacion", "descripcion": "Situación de la inversión (del Banco)", "tipo": "texto", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
+    {"variable": "banco_avance_f9", "descripcion": "Avance físico F9 (del Banco)", "tipo": "numérico", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
+    {"variable": "banco_avance_f12b", "descripcion": "Avance físico F12B (del Banco)", "tipo": "numérico", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
+    {"variable": "banco_monto_actualizado", "descripcion": "Costo actualizado (del Banco)", "tipo": "numérico", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
+    {"variable": "banco_nombre_inv", "descripcion": "Nombre de la inversión (del Banco)", "tipo": "texto", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
+]
+df_diccionario = pd.DataFrame(DICCIONARIO)
+
+# ── 13. EXPORTAR ─────────────────────────────────────────────────────────────
 print("\n>> Exportando archivos...")
 
 with pd.ExcelWriter(OUT_CLEAN, engine="openpyxl") as w:
     df_clean.to_excel(w, index=False, sheet_name="Base Limpia")
+    df_diccionario.to_excel(w, index=False, sheet_name="Diccionario de Variables")
 print(f"   {OUT_CLEAN.name}")
 
 with pd.ExcelWriter(OUT_ERRORS, engine="openpyxl") as w:
