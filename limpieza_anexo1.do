@@ -274,7 +274,7 @@ replace cod_mod = "" if regexm(cod_mod, "[a-zA-Z]")
 
 * separadores: /, -, saltos de linea => /
 replace cod_mod = subinstr(cod_mod, ",", "/", .)
-replace cod_mod = subinstr(cod_mod, " - ", "/", .)
+replace cod_mod = subinstr(cod_mod, "-", "/", .)
 replace cod_mod = subinstr(cod_mod, char(10), "/", .)
 replace cod_mod = subinstr(cod_mod, char(13), "/", .)
 replace cod_mod = subinstr(cod_mod, " ", "", .)

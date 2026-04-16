@@ -120,7 +120,7 @@ def norm_cod_mod(v):
         return None
     if re.search(r"[a-zA-Z]", s):
         return None
-    s = s.replace("/", ",").replace(" - ", ",")
+    s = s.replace("/", ",").replace("-", ",")
     s = s.replace("\n", ",").replace("\r", ",")
     s = re.sub(r"\s+", "", s)
     s = re.sub(r",+", ",", s)
