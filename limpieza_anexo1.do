@@ -451,8 +451,9 @@ capture noisily {
 	* conservar solo las variables que voy a usar para enriquecer
 	keep cui_banco DES_TIPO_FORMATO COSTO_INV_TOTAL_BI TIENE_F9 ///
 		AVANCE_FISICO_F9 AVANCE_FISICO_F12B ESTADO SITUACION ///
-		COSTO_ACTUALIZADO_BI FECHA_REGISTRO FECHA_VIABILIDAD ///
-		TIENE_F8 NOMBRE_INVERSION DEPARTAMENTO_CUI PROVINCIA_CUI DISTRITO
+		COSTO_ACTUALIZADO_BI ///
+		TIENE_F8 TIENE_ET_DE NOMBRE_INVERSION DEPARTAMENTO_CUI PROVINCIA_CUI DISTRITO ///
+		PLIEGO UEP_ULTIMA FEC_INI_F8 FEC_FIN_F8
 
 	* renombrar para evitar conflictos con anexo
 	rename DES_TIPO_FORMATO banco_tipo_raw
@@ -463,10 +464,13 @@ capture noisily {
 	rename ESTADO banco_estado
 	rename SITUACION banco_situacion
 	rename COSTO_ACTUALIZADO_BI banco_monto_actualizado
-	rename FECHA_REGISTRO banco_fecha_registro
-	rename FECHA_VIABILIDAD banco_fecha_viabilidad
 	rename TIENE_F8 banco_tiene_f8
+	rename TIENE_ET_DE banco_tiene_et
 	rename NOMBRE_INVERSION banco_nombre_inv
+	rename PLIEGO banco_pliego
+	rename UEP_ULTIMA banco_ejecutora
+	rename FEC_INI_F8 banco_fecha_ini_ejec
+	rename FEC_FIN_F8 banco_fecha_fin_ejec
 	rename DEPARTAMENTO_CUI banco_departamento
 	rename PROVINCIA_CUI banco_provincia
 	rename DISTRITO banco_distrito
@@ -577,7 +581,8 @@ if _rc == 0 {
 	replace avance = avance * 100 if avance >= 0 & avance <= 1 & !missing(avance)
 	replace err_avance = 0 if !missing(avance) & avance >= 0 & avance <= 100
 
-	drop banco_tipo_raw banco_monto banco_f9
+	capture rename banco_f9 banco_tiene_f9_banco
+	capture drop banco_tipo_raw banco_monto
 }
 else {
 	gen cui_en_banco = "NO VERIFICADO"
@@ -598,7 +603,8 @@ capture noisily {
 	keep cui_banco TIPO_INVERSION COSTO_ACTUALIZADO MONTO_VIABLE ///
 		TIENE_F9 AVANCE_FISICO AVANCE_EJECUCION ESTADO SITUACION ///
 		FUNCION PROGRAMA NOMBRE_INVERSION DEPARTAMENTO PROVINCIA DISTRITO ///
-		TIENE_F8 CULMINADA
+		TIENE_F8 CULMINADA ENTIDAD EXPEDIENTE_TECNICO ///
+		FEC_INI_EJECUCION FEC_FIN_EJUCION INICIO_EJEC_FISICA CULMINACION_EJEC_FISICA
 
 	rename TIPO_INVERSION mef_tipo_raw
 	rename COSTO_ACTUALIZADO mef_costo_act
@@ -614,6 +620,12 @@ capture noisily {
 	rename DEPARTAMENTO mef_departamento
 	rename PROVINCIA mef_provincia
 	rename DISTRITO mef_distrito
+	rename ENTIDAD mef_entidad
+	rename EXPEDIENTE_TECNICO mef_tiene_et
+	rename FEC_INI_EJECUCION mef_fecha_ini_ejec
+	rename FEC_FIN_EJUCION mef_fecha_fin_ejec
+	rename INICIO_EJEC_FISICA mef_inicio_ejec_fisica
+	rename CULMINACION_EJEC_FISICA mef_culmin_ejec_fisica
 	rename TIENE_F8 mef_tiene_f8
 	rename CULMINADA mef_culminada
 
@@ -670,7 +682,8 @@ if _rc == 0 {
 	replace f9 = "NO" if upper(strtrim(mef_f9)) == "NO" & cui_en_banco2 == "NO" & (missing(f9) | err_f9 == 1)
 	replace err_f9 = 0 if inlist(f9, "SI", "NO") & cui_en_mef == "SI"
 
-	drop mef_tipo_raw mef_costo_act mef_f9 mef_avance_fisico mef_avance_ejec
+	capture drop mef_tipo_raw mef_costo_act mef_avance_fisico mef_avance_ejec
+	capture rename mef_f9 mef_tiene_f9_mef
 }
 else {
 	gen cui_en_mef = "NO VERIFICADO"
@@ -717,6 +730,105 @@ else {
 }
 
 rename cui_banco cui_primero_usado
+
+* -------------------------------------------------------------------------
+* 14b. LIMPIAR FECHAS
+* -------------------------------------------------------------------------
+* eliminar valores no-fecha y 00/01/1900
+
+capture tostring fecha, replace force
+replace fecha = strtrim(fecha)
+
+* valores no-fecha => missing
+foreach val in "N/D" "-" "--" "---" "NO" "SI" "SÍ" "NO CULMINADO" ///
+	"EN EJECUCION" "EN EJECUCIÓN" "SUSPENDIDA" "NO REGISTRA" ///
+	"SIN DEFINIR" "PROYECTO VIABLE" "EN PROCESO DE RECEPCIÓN" ///
+	"JUNIO" "NO CUENTA CON EJECUCION FISICA" ///
+	"PROYECTO CON EXPEDIENTE TECNICO" {
+	replace fecha = "" if upper(strtrim(fecha)) == upper("`val'")
+}
+
+* eliminar 00/01/1900
+replace fecha = "" if regexm(fecha, "1900")
+
+* textos largos que no son fechas
+replace fecha = "" if regexm(fecha, "[a-zA-Z]") & !regexm(fecha, "^[0-9]+ DE [A-Z]+ D")
+
+* -------------------------------------------------------------------------
+* 14c. CATEGORIZAR COMENTARIOS EN 20 GRUPOS
+* -------------------------------------------------------------------------
+
+gen comentarios_grupo = ""
+
+replace comentarios_grupo = "OBRA CULMINADA" if regexm(upper(comentarios), "CULMINA|FINALIZA|CONCLUIDO|TERMINAD|100\s*%|RECEPCIONAD")
+replace comentarios_grupo = "EN EJECUCIÓN" if regexm(upper(comentarios), "EN EJECUC|EJECUCION FISICA|EJECUTANDO|EN CONSTRUCCION") & comentarios_grupo == ""
+replace comentarios_grupo = "EN PROCESO DE LIQUIDACIÓN" if regexm(upper(comentarios), "LIQUIDACI|LIQUIDADO|LIQUIDAR|LUQUIDADO") & comentarios_grupo == ""
+replace comentarios_grupo = "OBRA PARALIZADA/SUSPENDIDA" if regexm(upper(comentarios), "PARALIZ|SUSPENDID|INCONCLUS") & comentarios_grupo == ""
+replace comentarios_grupo = "EN PROCESO DE CIERRE" if regexm(upper(comentarios), "CIERRE|CERRAD|FORMATO 9|FORMATO 09|F9|F01") & comentarios_grupo == ""
+replace comentarios_grupo = "CON EXPEDIENTE TÉCNICO" if regexm(upper(comentarios), "EXPEDIENTE T|EXP\. T|E\.T\..*APROBAD") & comentarios_grupo == ""
+replace comentarios_grupo = "EN ELABORACIÓN DE ET" if regexm(upper(comentarios), "ELABORACI.*E\.T|ELABORACION DEL EXPEDIENTE|FORMULACI.*E\.T") & comentarios_grupo == ""
+replace comentarios_grupo = "SIN EXPEDIENTE TÉCNICO" if regexm(upper(comentarios), "NO TIENE EXPEDIENTE|NO TIENE FICHA|SIN EXP") & comentarios_grupo == ""
+replace comentarios_grupo = "PENDIENTE DE FINANCIAMIENTO" if regexm(upper(comentarios), "FINANCIAMIENTO|SIN PRESUPUESTO|FALTA FINANC") & comentarios_grupo == ""
+replace comentarios_grupo = "TRANSFERIDO/RECEPTADO" if regexm(upper(comentarios), "TRANSFERI|RECEPTADO") & comentarios_grupo == ""
+replace comentarios_grupo = "NO TIENE AVANCE FÍSICO" if regexm(upper(comentarios), "NO TIENE AVANCE FISICO|NO PRESENTA.*AVANCE FISICO|NO CUENTA CON AVANCE FISICO") & comentarios_grupo == ""
+replace comentarios_grupo = "SOLO AVANCE FINANCIERO" if regexm(upper(comentarios), "AVANCE FINANCIERO|AVANCE FIANANCIERO") & comentarios_grupo == ""
+replace comentarios_grupo = "NO CUENTA CON INTERVENCIÓN" if regexm(upper(comentarios), "NO CUENTA CON INTERVEN|NO EJECUT|SIN EJECUCI") & comentarios_grupo == ""
+replace comentarios_grupo = "VIABLE/EN PROGRAMACIÓN" if regexm(upper(comentarios), "VIABLE|PROGRAMACI|PMI|FICHA T") & comentarios_grupo == ""
+replace comentarios_grupo = "CERCO PERIMÉTRICO" if regexm(upper(comentarios), "CERCO PERIM|CERCO") & comentarios_grupo == ""
+replace comentarios_grupo = "COBERTURA/LOSA DEPORTIVA" if regexm(upper(comentarios), "COBERTURA|LOSA DEPORTIVA|CAMPO DEPORTIVO|GRASS|TECHADO") & comentarios_grupo == ""
+replace comentarios_grupo = "CONSTRUCCIÓN NUEVA" if regexm(upper(comentarios), "CONSTRUCCI.*NUEVA|NUEVA INFRAESTRUCTURA|COSTRUCCION|SE HA CONSTRUIDO") & comentarios_grupo == ""
+replace comentarios_grupo = "EQUIPAMIENTO/MOBILIARIO" if regexm(upper(comentarios), "EQUIPAMIENTO|MOBILIARIO|COMPUTADORA|EQUIPO") & comentarios_grupo == ""
+replace comentarios_grupo = "DEMOLICIÓN" if regexm(upper(comentarios), "DEMOLICI|DEMOLID") & comentarios_grupo == ""
+replace comentarios_grupo = "OTRO" if comentarios != "" & comentarios_grupo == ""
+
+* -------------------------------------------------------------------------
+* 14d. UNIFICAR CAMPOS: una sola fecha, pliego, UE, ET, F8, F9
+* -------------------------------------------------------------------------
+* prioridad: Banco MINEDU > MEF > Anexo 1
+
+* ET unificada
+gen tiene_et = ""
+capture replace tiene_et = upper(strtrim(banco_tiene_et)) if inlist(upper(strtrim(banco_tiene_et)), "SI", "NO")
+capture {
+	replace tiene_et = upper(strtrim(mef_tiene_et)) if tiene_et == "" & inlist(upper(strtrim(mef_tiene_et)), "SI", "SÍ", "NO")
+}
+replace tiene_et = "SI" if tiene_et == "SÍ"
+
+* F8 unificada
+gen tiene_f8_unif = ""
+capture replace tiene_f8_unif = upper(strtrim(banco_tiene_f8)) if inlist(upper(strtrim(banco_tiene_f8)), "SI", "NO")
+capture {
+	replace tiene_f8_unif = upper(strtrim(mef_tiene_f8)) if tiene_f8_unif == "" & inlist(upper(strtrim(mef_tiene_f8)), "SI", "SÍ", "NO")
+}
+replace tiene_f8_unif = "SI" if tiene_f8_unif == "SÍ"
+
+* F9 unificada (desde bancos, distinta del f9 del anexo)
+gen tiene_f9_unif = ""
+capture replace tiene_f9_unif = upper(strtrim(banco_tiene_f9_banco)) if inlist(upper(strtrim(banco_tiene_f9_banco)), "SI", "NO")
+capture {
+	replace tiene_f9_unif = upper(strtrim(mef_tiene_f9_mef)) if tiene_f9_unif == "" & inlist(upper(strtrim(mef_tiene_f9_mef)), "SI", "SÍ", "NO")
+}
+replace tiene_f9_unif = "SI" if tiene_f9_unif == "SÍ"
+
+* fecha fin ejecución unificada
+gen fecha_fin_ejec = ""
+capture replace fecha_fin_ejec = banco_fecha_fin_ejec if !missing(banco_fecha_fin_ejec) & banco_fecha_fin_ejec != ""
+capture {
+	replace fecha_fin_ejec = mef_fecha_fin_ejec if fecha_fin_ejec == "" & !missing(mef_fecha_fin_ejec) & mef_fecha_fin_ejec != ""
+}
+capture {
+	replace fecha_fin_ejec = mef_culmin_ejec_fisica if fecha_fin_ejec == "" & !missing(mef_culmin_ejec_fisica) & mef_culmin_ejec_fisica != ""
+}
+* eliminar 1900 de fecha_fin_ejec
+replace fecha_fin_ejec = "" if regexm(fecha_fin_ejec, "1900")
+
+* pliego: si no hay del banco, usar entidad MEF
+capture {
+	replace banco_pliego = mef_entidad if missing(banco_pliego) & !missing(mef_entidad)
+}
+
+di ""
+di "Campos unificados: fecha, pliego, UE, ET, F8, F9, fecha_fin_ejec"
 
 * -------------------------------------------------------------------------
 * 15. SEPARAR BASES
