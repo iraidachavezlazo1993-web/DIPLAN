@@ -22,7 +22,8 @@ else:
     temporal = entrada
 
 INPUT = entrada / "Anexo_1_avance_GR_GL.xlsx"
-INPUT_INV = entrada / "2026.03.23 Base de Inversiones_.xlsx"
+INPUT_INV = entrada / "2026.04.13 Base de Inversiones.xlsx"
+INPUT_VINC = entrada / "2026.04.14 Vinculaciones.xlsx"
 OUT_CLEAN = salida / "Anexo1_base_limpia.xlsx"
 OUT_ERRORS = salida / "Anexo1_base_errores.xlsx"
 OUT_PENDIENTES = salida / "Anexo1_pendientes_registro.xlsx"
@@ -363,116 +364,250 @@ def tipo_banco_a_anexo(v):
         return "PI"
     return None
 
+# ── 8.1 Cargar Base de Inversiones ──────────────────────────────────────────
+inv_dict = None
 if INPUT_INV.exists():
-    print(f"\n>> Cruzando con Base de Inversiones: {INPUT_INV.name}")
+    print(f"\n>> Cargando Base de Inversiones: {INPUT_INV.name}")
     try:
-        inv = pd.read_excel(INPUT_INV, dtype=str)
-        print(f"   {len(inv):,} registros en Base de Inversiones")
+        # Intentar leer con header=4 (formato nuevo) o header=0 (antiguo)
+        try:
+            inv = pd.read_excel(INPUT_INV, sheet_name="Data", header=4, dtype=str)
+        except Exception:
+            inv = pd.read_excel(INPUT_INV, dtype=str)
+
+        if "CODIGO_UNICO" not in inv.columns:
+            raise ValueError("No se encontró la columna CODIGO_UNICO")
 
         inv["cui_limpio"] = inv["CODIGO_UNICO"].apply(
             lambda x: re.sub(r"\.0+$", "", str(x).strip()).zfill(7) if pd.notna(x) else ""
         )
         inv_dedup = inv.drop_duplicates(subset=["cui_limpio"], keep="first")
         inv_dict = inv_dedup.set_index("cui_limpio")
+        print(f"   {len(inv_dict):,} CUIs únicos en Banco")
+    except Exception as e:
+        print(f"   Error: {e}")
+        inv_dict = None
+else:
+    print("\n>> Base de Inversiones no encontrada")
 
-        cui_validos = set(inv_dict.index)
-        df["cui_en_banco"] = df["cui"].apply(
-            lambda x: "SI" if str(x) in cui_validos else "NO"
+# ── 8.2 Cargar Vinculaciones (cod_local y cod_mod por CUI) ──────────────────
+vinc_por_cui = None
+vinc_por_local = None
+vinc_por_mod = None
+if INPUT_VINC.exists():
+    print(f"\n>> Cargando Vinculaciones: {INPUT_VINC.name}")
+    try:
+        vinc = pd.read_excel(INPUT_VINC, sheet_name="Vinculaciones", dtype=str)
+        print(f"   {len(vinc):,} registros en Vinculaciones")
+
+        # Solo registros Vinculados (confirmados por MEF)
+        vinc = vinc[vinc["ESTADO_VINCULACION"].str.strip().str.lower().str.startswith("vinculado", na=False)]
+        print(f"   {len(vinc):,} registros con estado Vinculado")
+
+        # Normalizar códigos: CUI a 7, cod_local a 6, cod_mod a 7
+        vinc["cui_7"] = vinc["CUI"].apply(
+            lambda x: re.sub(r"\.0+$", "", str(x).strip()).zfill(7) if pd.notna(x) and str(x).strip() else ""
         )
-        n_encontrados = (df["cui_en_banco"] == "SI").sum()
-        n_no_encontrados = (df["cui_en_banco"] == "NO").sum()
-        print(f"   CUI encontrados en Banco: {n_encontrados}")
-        print(f"   CUI NO encontrados en Banco: {n_no_encontrados}")
+        vinc["cod_local_6"] = vinc["CODIGO_LOCAL"].apply(
+            lambda x: re.sub(r"\.0+$", "", str(x).strip()).zfill(6) if pd.notna(x) and str(x).strip() else ""
+        )
+        vinc["cod_mod_7"] = vinc["CODIGO_MODULAR"].apply(
+            lambda x: re.sub(r"\.0+$", "", str(x).strip()).zfill(7) if pd.notna(x) and str(x).strip() else ""
+        )
 
-        if n_encontrados > 0:
-            n_reemplazados = 0
-            n_completados = 0
+        # Agrupar por CUI: obtener listas de cod_local y cod_mod únicos
+        vinc_por_cui = vinc.groupby("cui_7").agg({
+            "cod_local_6": lambda x: sorted(set(v for v in x if v)),
+            "cod_mod_7":   lambda x: sorted(set(v for v in x if v)),
+            "GRUPO":       lambda x: list(set(x.dropna())),
+        }).to_dict("index")
 
-            for idx, row in df.iterrows():
-                cui_val = str(row["cui"])
-                if cui_val not in cui_validos:
-                    continue
-                banco_row = inv_dict.loc[cui_val]
+        # Lookup inverso: cod_local → CUI(s), cod_mod → CUI(s)
+        vinc_por_local = vinc.groupby("cod_local_6")["cui_7"].apply(
+            lambda x: sorted(set(v for v in x if v))
+        ).to_dict()
+        vinc_por_mod = vinc.groupby("cod_mod_7")["cui_7"].apply(
+            lambda x: sorted(set(v for v in x if v))
+        ).to_dict()
 
-                # --- tipo: prevalece Banco ---
-                banco_tipo = tipo_banco_a_anexo(banco_row.get("DES_TIPO_FORMATO"))
-                if banco_tipo:
-                    if pd.isna(row["tipo"]) or row["tipo"] == "" or row["tipo"] == ERROR_FLAG:
-                        df.at[idx, "tipo"] = banco_tipo
-                        df.at[idx, "err_tipo"] = 0
-                        n_completados += 1
-                    elif row["tipo"] != banco_tipo:
-                        df.at[idx, "tipo"] = banco_tipo
-                        df.at[idx, "err_tipo"] = 0
-                        n_reemplazados += 1
-
-                # --- monto: prevalece Banco ---
-                banco_monto = banco_row.get("COSTO_INV_TOTAL_BI")
-                if pd.notna(banco_monto) and str(banco_monto).strip() != "":
-                    try:
-                        monto_banco = str(round(float(str(banco_monto).strip()), 2))
-                        if pd.isna(row["monto"]) or row["monto"] == "" or row["monto"] == ERROR_FLAG:
-                            df.at[idx, "monto"] = monto_banco
-                            df.at[idx, "err_monto"] = 0
-                            n_completados += 1
-                        else:
-                            df.at[idx, "monto"] = monto_banco
-                            df.at[idx, "err_monto"] = 0
-                            n_reemplazados += 1
-                    except ValueError:
-                        pass
-
-                # --- f9: prevalece Banco ---
-                banco_f9 = banco_row.get("TIENE_F9")
-                if pd.notna(banco_f9) and str(banco_f9).strip().upper() in {"SI", "NO"}:
-                    banco_f9_clean = str(banco_f9).strip().upper()
-                    if pd.isna(row["f9"]) or row["f9"] == "" or row["f9"] == ERROR_FLAG:
-                        df.at[idx, "f9"] = banco_f9_clean
-                        df.at[idx, "err_f9"] = 0
-                        n_completados += 1
-                    elif row["f9"] != banco_f9_clean:
-                        df.at[idx, "f9"] = banco_f9_clean
-                        df.at[idx, "err_f9"] = 0
-                        n_reemplazados += 1
-
-                # --- avance: completar si falta (usar F9 primero, luego F12B) ---
-                if pd.isna(row["avance"]) or row["avance"] == "" or row["avance"] == ERROR_FLAG:
-                    banco_av = banco_row.get("AVANCE_FISICO_F9")
-                    if pd.isna(banco_av) or str(banco_av).strip() in {"", "0"}:
-                        banco_av = banco_row.get("AVANCE_FISICO_F12B")
-                    if pd.notna(banco_av) and str(banco_av).strip() != "":
-                        try:
-                            av = float(str(banco_av).strip())
-                            if 0 <= av <= 1:
-                                av = round(av * 100, 2)
-                            df.at[idx, "avance"] = str(round(av, 2))
-                            df.at[idx, "err_avance"] = 0
-                            n_completados += 1
-                        except ValueError:
-                            pass
-
-                # --- campos extra del Banco (enriquecer) ---
-                for col_nueva, col_banco in CAMPOS_EXTRA_BANCO.items():
-                    val = banco_row.get(col_banco)
-                    if pd.notna(val) and str(val).strip() != "":
-                        df.at[idx, col_nueva] = str(val).strip()
-
-            # recalcular errores después del cruce
-            for v in CHECK_VARS:
-                df[f"err_{v}"] = df[v].apply(lambda x: 1 if str(x) == ERROR_FLAG else 0)
-            df["tiene_error"] = df[[f"err_{v}" for v in CHECK_VARS]].max(axis=1)
-
-            print(f"   Campos reemplazados (prevalece Banco): {n_reemplazados}")
-            print(f"   Campos completados (faltaban en Anexo): {n_completados}")
+        print(f"   CUIs únicos Vinculados: {len(vinc_por_cui):,}")
 
     except Exception as e:
-        print(f"   Error al cargar Base de Inversiones: {e}")
+        print(f"   Error: {e}")
         import traceback
         traceback.print_exc()
-        df["cui_en_banco"] = "NO VERIFICADO"
 else:
-    print("\n>> Base de Inversiones no encontrada, se omite cruce")
+    print("\n>> Vinculaciones no encontrado")
+
+# ── 8.3 CRUZAR CON BANCO DE INVERSIONES (por CUI) ────────────────────────────
+if inv_dict is not None:
+    print(f"\n>> Cruzando Anexo 1 con Banco de Inversiones...")
+    cui_validos = set(inv_dict.index)
+    df["cui_en_banco"] = df["cui"].apply(
+        lambda x: "SI" if str(x).split("/")[0] in cui_validos else "NO"
+    )
+    n_encontrados = (df["cui_en_banco"] == "SI").sum()
+    print(f"   CUI encontrados en Banco: {n_encontrados}")
+    print(f"   CUI NO encontrados en Banco: {len(df) - n_encontrados}")
+
+    n_reemplazados = 0
+    n_completados = 0
+    for idx, row in df.iterrows():
+        cui_val = str(row["cui"]).split("/")[0]
+        if cui_val not in cui_validos:
+            continue
+        banco_row = inv_dict.loc[cui_val]
+
+        # tipo: prevalece Banco
+        banco_tipo = tipo_banco_a_anexo(banco_row.get("DES_TIPO_FORMATO"))
+        if banco_tipo:
+            if pd.isna(row["tipo"]) or row["tipo"] == "" or row["tipo"] == ERROR_FLAG:
+                df.at[idx, "tipo"] = banco_tipo
+                df.at[idx, "err_tipo"] = 0
+                n_completados += 1
+            elif row["tipo"] != banco_tipo:
+                df.at[idx, "tipo"] = banco_tipo
+                df.at[idx, "err_tipo"] = 0
+                n_reemplazados += 1
+
+        # monto: prevalece Banco
+        banco_monto = banco_row.get("COSTO_INV_TOTAL_BI")
+        if pd.notna(banco_monto) and str(banco_monto).strip() != "":
+            try:
+                monto_banco = str(round(float(str(banco_monto).strip()), 2))
+                if pd.isna(row["monto"]) or row["monto"] == "" or row["monto"] == ERROR_FLAG:
+                    df.at[idx, "monto"] = monto_banco
+                    df.at[idx, "err_monto"] = 0
+                    n_completados += 1
+                else:
+                    df.at[idx, "monto"] = monto_banco
+                    df.at[idx, "err_monto"] = 0
+                    n_reemplazados += 1
+            except ValueError:
+                pass
+
+        # f9: prevalece Banco
+        banco_f9 = banco_row.get("TIENE_F9")
+        if pd.notna(banco_f9) and str(banco_f9).strip().upper() in {"SI", "NO"}:
+            banco_f9_clean = str(banco_f9).strip().upper()
+            if pd.isna(row["f9"]) or row["f9"] == "" or row["f9"] == ERROR_FLAG:
+                df.at[idx, "f9"] = banco_f9_clean
+                df.at[idx, "err_f9"] = 0
+                n_completados += 1
+            elif row["f9"] != banco_f9_clean:
+                df.at[idx, "f9"] = banco_f9_clean
+                df.at[idx, "err_f9"] = 0
+                n_reemplazados += 1
+
+        # avance: completar si falta
+        if pd.isna(row["avance"]) or row["avance"] == "" or row["avance"] == ERROR_FLAG:
+            banco_av = banco_row.get("AVANCE_FISICO_F9")
+            if pd.isna(banco_av) or str(banco_av).strip() in {"", "0"}:
+                banco_av = banco_row.get("AVANCE_FISICO_F12B")
+            if pd.notna(banco_av) and str(banco_av).strip() != "":
+                try:
+                    av = float(str(banco_av).strip())
+                    if 0 <= av <= 1:
+                        av = round(av * 100, 2)
+                    df.at[idx, "avance"] = str(round(av, 2))
+                    df.at[idx, "err_avance"] = 0
+                    n_completados += 1
+                except ValueError:
+                    pass
+
+        # campos extra del Banco (enriquecer)
+        for col_nueva, col_banco in CAMPOS_EXTRA_BANCO.items():
+            val = banco_row.get(col_banco)
+            if pd.notna(val) and str(val).strip() != "":
+                df.at[idx, col_nueva] = str(val).strip()
+
+    # recalcular errores
+    for v in CHECK_VARS:
+        df[f"err_{v}"] = df[v].apply(lambda x: 1 if str(x) == ERROR_FLAG else 0)
+    df["tiene_error"] = df[[f"err_{v}" for v in CHECK_VARS]].max(axis=1)
+
+    print(f"   Campos reemplazados (prevalece Banco): {n_reemplazados}")
+    print(f"   Campos completados (faltaban en Anexo): {n_completados}")
+else:
     df["cui_en_banco"] = "NO VERIFICADO"
+
+# ── 8.4 CRUZAR CON VINCULACIONES (cod_local y cod_mod oficiales) ────────────
+if vinc_por_cui is not None:
+    print(f"\n>> Cruzando Anexo 1 con Vinculaciones...")
+
+    df["cui_en_vinc"] = ""
+    df["cod_local_oficial"] = ""
+    df["cod_mod_oficial"] = ""
+    df["cod_local_match"] = ""
+    df["cod_mod_match"] = ""
+    df["vinc_grupo"] = ""
+
+    n_cui_vinc = 0
+    n_completados_local = 0
+    n_completados_mod = 0
+    n_mismatch_local = 0
+    n_mismatch_mod = 0
+
+    for idx, row in df.iterrows():
+        cui_val = str(row["cui"]).split("/")[0]
+        if cui_val not in vinc_por_cui:
+            df.at[idx, "cui_en_vinc"] = "NO"
+            continue
+        df.at[idx, "cui_en_vinc"] = "SI"
+        n_cui_vinc += 1
+        v = vinc_por_cui[cui_val]
+
+        # Listas oficiales desde Vinculaciones
+        locales_oficiales = v.get("cod_local_6", [])
+        mods_oficiales = v.get("cod_mod_7", [])
+        grupos = v.get("GRUPO", [])
+
+        df.at[idx, "cod_local_oficial"] = "/".join(locales_oficiales)
+        df.at[idx, "cod_mod_oficial"] = "/".join(mods_oficiales)
+        df.at[idx, "vinc_grupo"] = "/".join(grupos) if grupos else ""
+
+        # --- cod_local: validar y completar ---
+        local_anexo = str(row["cod_local"]) if pd.notna(row["cod_local"]) else ""
+        if local_anexo and local_anexo != "nan":
+            set_anexo = set(local_anexo.split("/"))
+            set_oficial = set(locales_oficiales)
+            if set_anexo.issubset(set_oficial) or set_oficial.issubset(set_anexo):
+                df.at[idx, "cod_local_match"] = "SI"
+            else:
+                df.at[idx, "cod_local_match"] = "MISMATCH"
+                n_mismatch_local += 1
+        elif locales_oficiales:
+            df.at[idx, "cod_local"] = "/".join(locales_oficiales)
+            df.at[idx, "cod_local_match"] = "COMPLETADO"
+            n_completados_local += 1
+
+        # --- cod_mod: validar y completar ---
+        mod_anexo = str(row["cod_mod"]) if pd.notna(row["cod_mod"]) else ""
+        if mod_anexo and mod_anexo != "nan":
+            set_anexo_m = set(mod_anexo.split("/"))
+            set_oficial_m = set(mods_oficiales)
+            if set_anexo_m.issubset(set_oficial_m) or set_oficial_m.issubset(set_anexo_m):
+                df.at[idx, "cod_mod_match"] = "SI"
+            else:
+                df.at[idx, "cod_mod_match"] = "MISMATCH"
+                n_mismatch_mod += 1
+        elif mods_oficiales:
+            df.at[idx, "cod_mod"] = "/".join(mods_oficiales)
+            df.at[idx, "cod_mod_match"] = "COMPLETADO"
+            n_completados_mod += 1
+
+    print(f"   CUIs encontrados en Vinculaciones: {n_cui_vinc}")
+    print(f"   cod_local completados desde Vinculaciones: {n_completados_local}")
+    print(f"   cod_mod completados desde Vinculaciones: {n_completados_mod}")
+    print(f"   cod_local con mismatch (no coinciden): {n_mismatch_local}")
+    print(f"   cod_mod con mismatch (no coinciden): {n_mismatch_mod}")
+else:
+    df["cui_en_vinc"] = "NO VERIFICADO"
+    df["cod_local_oficial"] = ""
+    df["cod_mod_oficial"] = ""
+    df["cod_local_match"] = ""
+    df["cod_mod_match"] = ""
+    df["vinc_grupo"] = ""
 
 # ── 9. SEPARAR BASES ────────────────────────────────────────────────────────
 err_cols = [f"err_{v}" for v in CHECK_VARS] + ["tiene_error"]
@@ -557,6 +692,12 @@ DICCIONARIO = [
     {"variable": "banco_avance_f12b", "descripcion": "Avance físico F12B (del Banco)", "tipo": "numérico", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
     {"variable": "banco_monto_actualizado", "descripcion": "Costo actualizado (del Banco)", "tipo": "numérico", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
     {"variable": "banco_nombre_inv", "descripcion": "Nombre de la inversión (del Banco)", "tipo": "texto", "regla_limpieza": "Campo adicional del Banco de Inversiones"},
+    {"variable": "cui_en_vinc", "descripcion": "¿El CUI existe en Vinculaciones MEF?", "tipo": "texto", "regla_limpieza": "SI / NO"},
+    {"variable": "cod_local_oficial", "descripcion": "Códigos locales oficiales desde Vinculaciones", "tipo": "texto (sep /)", "regla_limpieza": "Lista desde Vinculaciones MEF para ese CUI"},
+    {"variable": "cod_mod_oficial", "descripcion": "Códigos modulares oficiales desde Vinculaciones", "tipo": "texto (sep /)", "regla_limpieza": "Lista desde Vinculaciones MEF para ese CUI"},
+    {"variable": "cod_local_match", "descripcion": "¿cod_local del Anexo coincide con el oficial?", "tipo": "texto", "regla_limpieza": "SI / MISMATCH / COMPLETADO"},
+    {"variable": "cod_mod_match", "descripcion": "¿cod_mod del Anexo coincide con el oficial?", "tipo": "texto", "regla_limpieza": "SI / MISMATCH / COMPLETADO"},
+    {"variable": "vinc_grupo", "descripcion": "Grupo de la inversión (Básica, Superior, etc.)", "tipo": "texto", "regla_limpieza": "Desde Vinculaciones MEF"},
 ]
 df_diccionario = pd.DataFrame(DICCIONARIO)
 
