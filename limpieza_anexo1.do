@@ -588,6 +588,9 @@ else {
 	gen cui_en_banco = "NO VERIFICADO"
 }
 
+* guardar el resultado del cruce con Banco para no perderlo
+save "${rep_cons_t}\anexo1_post_banco.dta", replace
+
 * --- preparar Base MEF Completa ---
 capture noisily {
 	import excel using "${rep_cons_i}\Rep_Inversiones_13ABR2026_MEFCOMPLETA.xlsx", ///
@@ -635,24 +638,8 @@ capture noisily {
 }
 
 * --- merge con Base MEF (respaldo para CUI no en Banco MINEDU) ---
-* primero recuperar el anexo
-use "${rep_cons_t}\anexo1_limpio_precuce.dta", clear
-gen cui_primero2 = cui
-replace cui_primero2 = substr(cui, 1, strpos(cui + "/", "/") - 1) if strpos(cui, "/") > 0
-rename cui_primero2 cui_banco
-
-* re-merge con Banco (para tener cui_en_banco)
-capture confirm file "${rep_cons_t}\banco_prep.dta"
-if _rc == 0 {
-	merge m:1 cui_banco using "${rep_cons_t}\banco_prep.dta", ///
-		keep(master match) generate(_merge_banco2)
-	gen cui_en_banco2 = "SI" if _merge_banco2 == 3
-	replace cui_en_banco2 = "NO" if _merge_banco2 == 1
-	drop _merge_banco2
-}
-else {
-	gen cui_en_banco2 = "NO"
-}
+* retomar el dataset con el cruce de Banco ya hecho
+use "${rep_cons_t}\anexo1_post_banco.dta", clear
 
 capture confirm file "${rep_cons_t}\mef_prep.dta"
 if _rc == 0 {
@@ -664,22 +651,22 @@ if _rc == 0 {
 
 	* solo complementar si NO está en Banco MINEDU
 	* tipo
-	replace tipo = "IRI" if regexm(upper(mef_tipo_raw), "IRI") & cui_en_banco2 == "NO" & cui_en_mef == "SI" ///
+	replace tipo = "IRI" if regexm(upper(mef_tipo_raw), "IRI") & cui_en_banco == "NO" & cui_en_mef == "SI" ///
 		& (missing(tipo) | err_tipo == 1)
-	replace tipo = "IOARR" if regexm(upper(mef_tipo_raw), "IOARR|FUR") & cui_en_banco2 == "NO" & cui_en_mef == "SI" ///
+	replace tipo = "IOARR" if regexm(upper(mef_tipo_raw), "IOARR|FUR") & cui_en_banco == "NO" & cui_en_mef == "SI" ///
 		& (missing(tipo) | err_tipo == 1)
-	replace tipo = "PI" if regexm(upper(mef_tipo_raw), "PIP|PROYECTO") & cui_en_banco2 == "NO" & cui_en_mef == "SI" ///
+	replace tipo = "PI" if regexm(upper(mef_tipo_raw), "PIP|PROYECTO") & cui_en_banco == "NO" & cui_en_mef == "SI" ///
 		& (missing(tipo) | err_tipo == 1)
 	replace err_tipo = 0 if inlist(tipo, "IOARR", "IRI", "PI") & cui_en_mef == "SI"
 
 	* monto: completar si falta
 	capture destring mef_costo_act, replace force
-	replace monto = mef_costo_act if missing(monto) & !missing(mef_costo_act) & cui_en_banco2 == "NO"
+	replace monto = mef_costo_act if missing(monto) & !missing(mef_costo_act) & cui_en_banco == "NO"
 	replace err_monto = 0 if !missing(monto) & cui_en_mef == "SI"
 
 	* f9: completar si falta
-	replace f9 = "SI" if inlist(upper(strtrim(mef_f9)), "SI", "SÍ") & cui_en_banco2 == "NO" & (missing(f9) | err_f9 == 1)
-	replace f9 = "NO" if upper(strtrim(mef_f9)) == "NO" & cui_en_banco2 == "NO" & (missing(f9) | err_f9 == 1)
+	replace f9 = "SI" if inlist(upper(strtrim(mef_f9)), "SI", "SÍ") & cui_en_banco == "NO" & (missing(f9) | err_f9 == 1)
+	replace f9 = "NO" if upper(strtrim(mef_f9)) == "NO" & cui_en_banco == "NO" & (missing(f9) | err_f9 == 1)
 	replace err_f9 = 0 if inlist(f9, "SI", "NO") & cui_en_mef == "SI"
 
 	capture drop mef_tipo_raw mef_costo_act mef_avance_fisico mef_avance_ejec
@@ -691,7 +678,7 @@ else {
 
 * reconstruir el dataset final: volver a cargar el precuce y hacer todos los merges juntos
 * (esto es necesario porque Stata no permite merge sobre un dataset ya mergeado fácilmente)
-drop cui_banco cui_en_banco2
+drop cui_banco
 
 * --- merge con Vinculaciones ---
 * regenerar cui_banco para el merge
